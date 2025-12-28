@@ -1,0 +1,826 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Ops Copilot Console</title>
+  <style>
+    :root{
+      --bg:#0b1220; --panel:#0f1b2e; --panel2:#0d1728; --border:#1f3354;
+      --text:#d7e2f1; --muted:#8aa1c2;
+      --good:#3bd671; --warn:#f7c948; --bad:#ff5c5c; --accent:#44c2ff;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      --sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+      --shadow: 0 10px 30px rgba(0,0,0,.25);
+      --r: 14px;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0; font-family:var(--sans); color:var(--text); background:radial-gradient(1200px 900px at 20% 10%, #12284a 0%, var(--bg) 55%);
+    }
+    header{
+      position:sticky; top:0; z-index:10;
+      display:flex; align-items:center; justify-content:space-between;
+      padding:14px 18px; border-bottom:1px solid var(--border);
+      background:rgba(11,18,32,.82); backdrop-filter: blur(10px);
+    }
+    header .left{display:flex; gap:12px; align-items:baseline;}
+    header h1{font-size:16px; margin:0; letter-spacing:.3px;}
+    header .sub{color:var(--muted); font-size:12px;}
+    header .right{display:flex; gap:10px; align-items:center;}
+    .pill{
+      border:1px solid var(--border); background:rgba(15,27,46,.8);
+      padding:7px 10px; border-radius:999px; font-size:12px; color:var(--muted);
+      box-shadow: var(--shadow);
+    }
+    .pill b{color:var(--text); font-weight:600}
+    .btn{
+      cursor:pointer; border:1px solid var(--border); background:rgba(15,27,46,.85);
+      color:var(--text); padding:8px 10px; border-radius:10px; font-size:12px;
+    }
+    .btn:hover{border-color:#2c4a7a}
+    .btn:active{transform:translateY(1px)}
+    main{
+      padding:16px; max-width:1400px; margin:0 auto;
+      display:grid; grid-template-columns: 1.3fr .9fr; gap:16px;
+    }
+    .card{
+      background:linear-gradient(180deg, rgba(15,27,46,.95), rgba(13,23,40,.92));
+      border:1px solid var(--border);
+      border-radius: var(--r);
+      box-shadow: var(--shadow);
+      overflow:hidden;
+    }
+    .card .hd{
+      display:flex; align-items:center; justify-content:space-between;
+      padding:12px 14px; border-bottom:1px solid var(--border);
+      background:rgba(15,27,46,.8);
+    }
+    .card .hd .title{font-weight:700; font-size:13px; letter-spacing:.2px;}
+    .card .bd{padding:12px 14px;}
+    .muted{color:var(--muted)}
+    .grid2{display:grid; grid-template-columns:1fr 1fr; gap:16px;}
+    .stack{display:flex; flex-direction:column; gap:12px;}
+    .row{display:flex; gap:10px; align-items:center;}
+    .sep{height:1px; background:var(--border); margin:10px 0;}
+    .tag{
+      font-size:11px; padding:4px 8px; border-radius:999px; border:1px solid var(--border);
+      color:var(--muted);
+    }
+    .lvl{font-weight:800; font-size:12px; padding:4px 8px; border-radius:999px;}
+    .lvl.low{background:rgba(59,214,113,.12); color:var(--good); border:1px solid rgba(59,214,113,.35)}
+    .lvl.med{background:rgba(247,201,72,.12); color:var(--warn); border:1px solid rgba(247,201,72,.35)}
+    .lvl.high{background:rgba(255,92,92,.10); color:var(--bad); border:1px solid rgba(255,92,92,.35)}
+    .mono{font-family:var(--mono);}
+    .small{font-size:12px;}
+    .tiny{font-size:11px;}
+    .kpi{display:flex; gap:10px; flex-wrap:wrap;}
+    .kpi .pill{box-shadow:none}
+    .msgbox{
+      border:1px solid var(--border);
+      background:rgba(8,14,26,.55);
+      border-radius:12px;
+      padding:10px 10px;
+    }
+    .chat{
+      display:flex; flex-direction:column; gap:10px; max-height:360px; overflow:auto; padding-right:6px;
+    }
+    .bubble{
+      max-width:95%;
+      border:1px solid var(--border);
+      background:rgba(8,14,26,.55);
+      border-radius:14px;
+      padding:10px 10px;
+      line-height:1.45;
+      font-size:13px;
+    }
+    .bubble.me{align-self:flex-end; border-color:#2b4775; background:rgba(12,25,44,.65)}
+    .bubble.ai{align-self:flex-start;}
+    .inputrow{display:flex; gap:8px; margin-top:10px;}
+    input[type="text"]{
+      flex:1; padding:10px 10px; border-radius:12px; border:1px solid var(--border);
+      background:rgba(8,14,26,.55); color:var(--text); outline:none;
+    }
+    input[type="text"]::placeholder{color:rgba(138,161,194,.7)}
+    input[type="number"]{
+      width:120px; padding:8px 10px; border-radius:12px; border:1px solid var(--border);
+      background:rgba(8,14,26,.55); color:var(--text); outline:none;
+      font-family:var(--mono); font-size:12px;
+    }
+    .quick{display:flex; gap:8px; flex-wrap:wrap;}
+    .quick .btn{padding:7px 9px}
+    .list{display:flex; flex-direction:column; gap:10px;}
+    .item{
+      cursor:pointer;
+      border:1px solid var(--border);
+      border-radius:12px;
+      padding:10px 10px;
+      background:rgba(8,14,26,.48);
+    }
+    .item:hover{border-color:#2c4a7a}
+    .item.sel{border-color: var(--accent); box-shadow: 0 0 0 2px rgba(68,194,255,.15) inset;}
+    .item .top{display:flex; align-items:center; justify-content:space-between; gap:10px;}
+    .item .t{font-weight:700; font-size:13px;}
+    .timeline{display:flex; flex-direction:column; gap:8px; max-height:260px; overflow:auto; padding-right:6px;}
+    .tl{
+      border-left:2px solid rgba(68,194,255,.25);
+      padding-left:10px;
+    }
+    .tl .ts{color:var(--muted); font-size:11px;}
+    .tl .note{font-size:12px; line-height:1.45;}
+    .logbox{
+      font-family:var(--mono);
+      font-size:12px;
+      line-height:1.45;
+      max-height:260px;
+      overflow:auto;
+      padding-right:6px;
+    }
+    .logline{white-space:pre-wrap; border-bottom:1px dashed rgba(31,51,84,.55); padding:6px 0;}
+    .logline .ts{color:var(--muted)}
+    .logline .sevINFO{color:rgba(215,226,241,.7)}
+    .logline .sevWARN{color:var(--warn)}
+    .logline .sevERROR{color:var(--bad)}
+    .rightcol{display:flex; flex-direction:column; gap:16px;}
+    .analysis .summary{font-size:13px; line-height:1.5}
+    .analysis .secTitle{font-size:12px; font-weight:800; letter-spacing:.2px; margin:12px 0 6px;}
+    .analysis ul{margin:6px 0 0 16px; padding:0}
+    .analysis li{margin:6px 0; font-size:12px; line-height:1.45}
+    .footnote{color:var(--muted); font-size:11px; margin-top:8px}
+    .badge{
+      display:inline-flex; align-items:center; gap:6px;
+      padding:4px 8px; border-radius:999px;
+      border:1px solid var(--border); color:var(--muted); font-size:11px;
+    }
+    .dot{width:8px; height:8px; border-radius:999px; background:var(--muted)}
+    .dot.ok{background:var(--good)}
+    .dot.warn{background:var(--warn)}
+    .dot.bad{background:var(--bad)}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="left">
+      <h1>🤖 Ops Copilot Console</h1>
+      <div class="sub">AI-first 运维指挥中心（结论为主，证据为辅）</div>
+    </div>
+    <div class="right">
+      <div class="pill">API: <b id="apiBaseText"></b></div>
+      <div class="pill">状态: <b id="apiStatus">未知</b></div>
+      <button class="btn" id="btnRefresh">刷新</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- LEFT: Copilot + Focus + Timeline -->
+    <div class="card">
+      <div class="hd">
+        <div class="title">A · Ops Copilot（主视角）</div>
+        <div class="kpi">
+          <span class="badge"><span class="dot" id="dotHealth"></span><span id="healthText">Health</span></span>
+          <span class="badge">选中事件: <span id="selectedEventText" class="mono">无</span></span>
+        </div>
+      </div>
+      <div class="bd">
+        <div class="grid2">
+          <!-- Chat -->
+          <div class="stack">
+            <div class="msgbox">
+              <div class="row" style="justify-content:space-between;">
+                <div class="small"><b>Copilot</b> <span class="muted">（自由聊天 + 演示按钮）</span></div>
+                <div class="tag">结构化输出</div>
+              </div>
+
+              <div class="quick" style="margin-top:10px;">
+                <button class="btn" data-q="现在系统状态怎么样？">现在状态？</button>
+                <button class="btn" data-q="发生了什么？为什么这是个问题？">发生了什么？</button>
+                <button class="btn" data-q="会不会影响业务？要不要马上处理？">影响/紧急？</button>
+                <button class="btn" data-q="我现在应该做什么？按优先级给步骤。">下一步怎么做？</button>
+                <button class="btn" data-q="如果我暂时不处理，会发生什么？">不处理会怎样？</button>
+              </div>
+
+              <div class="sep"></div>
+
+              <div id="chat" class="chat"></div>
+
+              <div class="inputrow">
+                <input id="chatInput" type="text" placeholder="自由提问：比如“这条 MAC 漂移为什么是 HIGH？”" />
+                <button class="btn" id="btnSend">发送</button>
+              </div>
+
+              <div class="footnote">
+                Tip：按钮是为了演示稳定；自由输入能验证“是不是 LLM 真在回答”（看右侧 token 面板会不会增长）。
+              </div>
+            </div>
+          </div>
+
+          <!-- Focus + Timeline -->
+          <div class="stack">
+            <div class="card" style="margin:0;">
+              <div class="hd">
+                <div class="title">C · 关注焦点（Top 3）</div>
+                <div class="muted tiny">“你现在最该关心的”</div>
+              </div>
+              <div class="bd">
+                <div id="focusList" class="list"></div>
+              </div>
+            </div>
+
+            <div class="card" style="margin:0;">
+              <div class="hd">
+                <div class="title">B · 事件时间线（Narrative）</div>
+                <div class="muted tiny">“AI 如何理解事件”</div>
+              </div>
+              <div class="bd">
+                <div id="timeline" class="timeline"></div>
+                <div class="footnote">选中某个事件后自动刷新。</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: Analysis + LLM Panel + Evidence -->
+    <div class="rightcol">
+      <div class="card analysis">
+        <div class="hd">
+          <div class="title">AI 分析面板（结论 → 风险 → 根因 → 动作）</div>
+          <div id="riskBadge"></div>
+        </div>
+        <div class="bd">
+          <div class="summary" id="summaryText" class="small muted">暂无分析。先点一个事件或在 Copilot 问一句。</div>
+
+          <div class="secTitle">风险评估</div>
+          <div id="riskText" class="small muted">-</div>
+
+          <div class="secTitle">可能原因</div>
+          <ul id="causes"></ul>
+
+          <div class="secTitle">建议动作</div>
+          <ul id="actions"></ul>
+
+          <div class="secTitle">证据引用</div>
+          <div id="evidenceRefs" class="tiny muted">-</div>
+        </div>
+      </div>
+
+      <!-- LLM Token / Cost 面板 -->
+      <div class="card">
+        <div class="hd">
+          <div class="title">LLM Token & 成本面板（过去 1 小时）</div>
+          <div class="muted tiny">“按 action/endpoint 看到底是谁在烧钱”</div>
+        </div>
+        <div class="bd">
+          <div class="kpi" style="margin-bottom:10px;">
+            <span class="pill">Calls: <b id="llmCalls">0</b></span>
+            <span class="pill">Errors: <b id="llmErrors">0</b></span>
+            <span class="pill">Tokens: <b id="llmTokens">0</b></span>
+            <span class="pill">Avg Lat: <b id="llmAvgLat">0</b> ms</span>
+            <span class="pill">Est Cost: <b id="llmCostTotal">$0.0000</b></span>
+          </div>
+
+          <div class="msgbox" style="margin-bottom:10px;">
+            <div class="row" style="justify-content:space-between;">
+              <div class="small"><b>价格设置（$ / 1M tokens）</b> <span class="muted tiny">保存到浏览器</span></div>
+              <button class="btn" id="btnSavePrice">保存</button>
+            </div>
+            <div class="row tiny muted" style="margin-top:8px; flex-wrap:wrap;">
+              <span>Input:</span> <input type="number" step="0.0001" id="priceIn" />
+              <span>Output:</span> <input type="number" step="0.0001" id="priceOut" />
+              <span>Blend(无拆分时用):</span> <input type="number" step="0.0001" id="priceBlend" />
+              <span class="muted tiny">(如果后端不给 prompt/compl tokens，就用 Blend * total_tokens)</span>
+            </div>
+          </div>
+
+          <div class="sep"></div>
+
+          <div class="grid2" style="grid-template-columns:1fr 1fr;">
+            <div>
+              <div class="small"><b>By Action</b> <span class="muted tiny">(top 8)</span></div>
+              <div id="llmByAction" class="tiny muted" style="margin-top:8px;"></div>
+            </div>
+            <div>
+              <div class="small"><b>By Endpoint</b> <span class="muted tiny">(top 8)</span></div>
+              <div id="llmByEndpoint" class="tiny muted" style="margin-top:8px;"></div>
+            </div>
+          </div>
+
+          <div class="sep"></div>
+
+          <div class="row" style="justify-content:space-between; align-items:baseline;">
+            <div class="small"><b>Recent Calls</b> <span class="muted tiny">(latest 20)</span></div>
+            <div class="tag mono" id="llmUpdatedAt">-</div>
+          </div>
+
+          <div id="llmRecent" class="logbox" style="max-height:240px; margin-top:8px;"></div>
+
+          <div class="footnote">
+            说明：如果你点按钮/发送聊天后，这里 calls/tokens 增长且 recent 出现新记录，就能证明是 LLM 调用而非预制回答。
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="hd">
+          <div class="title">证据层（事件/日志流）</div>
+          <div class="muted tiny">“数据给 AI 用，人只在需要时看证据”</div>
+        </div>
+        <div class="bd">
+          <div class="row" style="justify-content:space-between;">
+            <div class="small"><b>最新事件（用于真实感）</b></div>
+            <div class="tag mono" id="eventCount">0</div>
+          </div>
+          <div class="sep"></div>
+          <div id="logbox" class="logbox"></div>
+          <div class="footnote">默认每 2 秒刷新一次（可改）。</div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+<script>
+(() => {
+  // === Config ===
+  const API_BASE = localStorage.getItem("OPS_API_BASE") || "http://127.0.0.1:8000";
+  const REFRESH_MS = 2000;
+  const WINDOW_S = 3600; // ✅ 过去 1 小时
+
+  // === DOM ===
+  const apiBaseText = document.getElementById("apiBaseText");
+  const apiStatus = document.getElementById("apiStatus");
+  const btnRefresh = document.getElementById("btnRefresh");
+  const dotHealth = document.getElementById("dotHealth");
+  const healthText = document.getElementById("healthText");
+  const selectedEventText = document.getElementById("selectedEventText");
+
+  const chat = document.getElementById("chat");
+  const chatInput = document.getElementById("chatInput");
+  const btnSend = document.getElementById("btnSend");
+
+  const focusList = document.getElementById("focusList");
+  const timeline = document.getElementById("timeline");
+
+  const riskBadge = document.getElementById("riskBadge");
+  const summaryText = document.getElementById("summaryText");
+  const riskText = document.getElementById("riskText");
+  const causes = document.getElementById("causes");
+  const actions = document.getElementById("actions");
+  const evidenceRefs = document.getElementById("evidenceRefs");
+
+  const logbox = document.getElementById("logbox");
+  const eventCount = document.getElementById("eventCount");
+
+  // === LLM Panel DOM ===
+  const llmCalls = document.getElementById("llmCalls");
+  const llmErrors = document.getElementById("llmErrors");
+  const llmTokens = document.getElementById("llmTokens");
+  const llmAvgLat = document.getElementById("llmAvgLat");
+  const llmCostTotal = document.getElementById("llmCostTotal");
+  const llmByAction = document.getElementById("llmByAction");
+  const llmByEndpoint = document.getElementById("llmByEndpoint");
+  const llmRecent = document.getElementById("llmRecent");
+  const llmUpdatedAt = document.getElementById("llmUpdatedAt");
+
+  // price inputs
+  const priceIn = document.getElementById("priceIn");
+  const priceOut = document.getElementById("priceOut");
+  const priceBlend = document.getElementById("priceBlend");
+  const btnSavePrice = document.getElementById("btnSavePrice");
+
+  apiBaseText.textContent = API_BASE;
+
+  // === State ===
+  let selectedEventId = null;
+  let lastEvents = [];
+
+  // === Helpers ===
+  function lvlClass(lvl){
+    if(!lvl) return "low";
+    const x = String(lvl).toUpperCase();
+    if(x === "HIGH") return "high";
+    if(x === "MEDIUM") return "med";
+    return "low";
+  }
+  function lvlLabel(lvl){
+    const x = String(lvl||"LOW").toUpperCase();
+    if(x === "HIGH") return "HIGH";
+    if(x === "MEDIUM") return "MEDIUM";
+    return "LOW";
+  }
+
+  function setHealth(ok, text){
+    apiStatus.textContent = ok ? "OK" : "DOWN";
+    dotHealth.className = "dot " + (ok ? "ok" : "bad");
+    healthText.textContent = text || (ok ? "Healthy" : "Unreachable");
+  }
+
+  async function api(path, opts={}){
+    const url = API_BASE + path;
+    const res = await fetch(url, {
+      headers: {"Content-Type":"application/json"},
+      ...opts
+    });
+    if(!res.ok){
+      const t = await res.text().catch(()=> "");
+      throw new Error(`HTTP ${res.status} ${path} ${t}`);
+    }
+    return res.json();
+  }
+
+  function pushBubble(text, who="ai"){
+    const div = document.createElement("div");
+    div.className = "bubble " + (who === "me" ? "me" : "ai");
+    div.textContent = text;
+    chat.appendChild(div);
+    chat.scrollTop = chat.scrollHeight;
+  }
+
+  function escapeHtml(s){
+    return String(s ?? "")
+      .replaceAll("&","&amp;")
+      .replaceAll("<","&lt;")
+      .replaceAll(">","&gt;")
+      .replaceAll('"',"&quot;")
+      .replaceAll("'","&#039;");
+  }
+
+  function renderFocus(items){
+    focusList.innerHTML = "";
+    if(!items || items.length === 0){
+      focusList.innerHTML = `<div class="muted small">暂无事件。先跑 feeder 或手动 ingest。</div>`;
+      return;
+    }
+    for(const it of items){
+      const div = document.createElement("div");
+      div.className = "item" + (it.event_id === selectedEventId ? " sel" : "");
+      div.innerHTML = `
+        <div class="top">
+          <div class="t">${escapeHtml(it.title)}</div>
+          <span class="lvl ${lvlClass(it.risk_level)}">${lvlLabel(it.risk_level)}</span>
+        </div>
+        <div class="muted tiny" style="margin-top:6px;">${escapeHtml(it.one_line || "")}</div>
+        <div class="muted tiny mono" style="margin-top:6px;">${escapeHtml(it.event_id)}</div>
+      `;
+      div.onclick = () => selectEvent(it.event_id);
+      focusList.appendChild(div);
+    }
+  }
+
+  function renderTimeline(items){
+    timeline.innerHTML = "";
+    if(!items || items.length === 0){
+      timeline.innerHTML = `<div class="muted small">暂无时间线。请先选中事件。</div>`;
+      return;
+    }
+    for(const t of items){
+      const div = document.createElement("div");
+      div.className = "tl";
+      div.innerHTML = `
+        <div class="ts mono">${escapeHtml(t.ts)}</div>
+        <div class="note">${escapeHtml(t.note)}</div>
+      `;
+      timeline.appendChild(div);
+    }
+    timeline.scrollTop = timeline.scrollHeight;
+  }
+
+  function renderAnalysis(a){
+    if(!a){
+      riskBadge.innerHTML = "";
+      summaryText.textContent = "暂无分析。先点一个事件或在 Copilot 问一句。";
+      riskText.textContent = "-";
+      causes.innerHTML = "";
+      actions.innerHTML = "";
+      evidenceRefs.textContent = "-";
+      return;
+    }
+    const lvl = a.risk?.level || "LOW";
+    riskBadge.innerHTML = `<span class="lvl ${lvlClass(lvl)}">${lvlLabel(lvl)}</span>`;
+    summaryText.textContent = a.summary || "";
+    riskText.textContent = `${lvlLabel(lvl)} · 置信度 ${(a.risk?.confidence ?? 0).toFixed(2)} · 影响：${a.risk?.impact || "-"} · 扩散：${a.risk?.spread || "-"}`;
+
+    causes.innerHTML = "";
+    (a.possible_causes || []).forEach(c => {
+      const li = document.createElement("li");
+      li.textContent = `${c.rank}. ${c.cause}（${(c.confidence ?? 0).toFixed(2)}）`;
+      causes.appendChild(li);
+    });
+
+    actions.innerHTML = "";
+    (a.actions || []).forEach(x => {
+      const li = document.createElement("li");
+      li.textContent = `${x.priority}. ${x.action} —— ${x.why}`;
+      actions.appendChild(li);
+    });
+
+    const refs = (a.evidence_refs || []).map(r => {
+      if(r.type === "log") return `log:${r.id || "-"}`;
+      return `metric:${r.name || "-"}@${r.ts || "-"}`;
+    });
+    evidenceRefs.textContent = refs.length ? refs.join(" · ") : "-";
+  }
+
+  function renderLogBox(events){
+    logbox.innerHTML = "";
+    eventCount.textContent = String(events.length);
+    for(const e of events){
+      const raw = e?.raw?.message || e?.raw?.payload?.msg || "";
+      const ts = e.ts || "";
+      const sev = e.severity_hint || "INFO";
+      const line = document.createElement("div");
+      line.className = "logline";
+      line.innerHTML = `<span class="ts">${escapeHtml(ts)}</span>  <span class="sev${escapeHtml(sev)}">${escapeHtml(sev)}</span>  ${escapeHtml(raw || e.title || "")}`;
+      logbox.appendChild(line);
+    }
+  }
+
+  async function selectEvent(eventId){
+    selectedEventId = eventId;
+    selectedEventText.textContent = eventId ? eventId : "无";
+
+    try{
+      const tl = await api(`/api/incidents/${encodeURIComponent(eventId)}/timeline`);
+      renderTimeline(tl.timeline || []);
+    }catch(e){
+      renderTimeline([]);
+    }
+
+    try{
+      const a = await api(`/api/copilot/analyze`, {
+        method:"POST",
+        body: JSON.stringify({ event_id: eventId, question:"what_happened", context:{} })
+      });
+      renderAnalysis(a);
+    }catch(e){
+      renderAnalysis(null);
+    }
+
+    await refreshFocus();
+  }
+
+  async function refreshHealth(){
+    try{
+      const h = await api("/api/health");
+      setHealth(true, `LLM:${h.llm} v${h.version}`);
+    }catch(e){
+      setHealth(false, "API unreachable");
+    }
+  }
+
+  async function refreshFocus(){
+    try{
+      const f = await api("/api/focus?top=3");
+      renderFocus(f.items || []);
+      if(!selectedEventId && f.items && f.items.length){
+        await selectEvent(f.items[0].event_id);
+      }
+    }catch(e){
+      renderFocus([]);
+    }
+  }
+
+  async function refreshEvents(){
+    try{
+      const evts = await api("/api/events?limit=30");
+      lastEvents = evts || [];
+      renderLogBox(lastEvents);
+    }catch(e){
+      renderLogBox([]);
+    }
+  }
+
+  // =========================
+  // Pricing + Cost Estimation
+  // =========================
+  const PRICE_KEY = "OPS_LLM_PRICE";
+  function loadPrice(){
+    const raw = localStorage.getItem(PRICE_KEY);
+    let p = { in_per_1m: 0.0, out_per_1m: 0.0, blend_per_1m: 0.0 };
+    try{
+      if(raw){
+        const j = JSON.parse(raw);
+        p.in_per_1m = Number(j.in_per_1m ?? p.in_per_1m);
+        p.out_per_1m = Number(j.out_per_1m ?? p.out_per_1m);
+        p.blend_per_1m = Number(j.blend_per_1m ?? p.blend_per_1m);
+      }
+    }catch(e){}
+    return p;
+  }
+  function savePrice(p){
+    localStorage.setItem(PRICE_KEY, JSON.stringify(p));
+  }
+  function applyPriceToInputs(p){
+    priceIn.value = String(p.in_per_1m ?? 0);
+    priceOut.value = String(p.out_per_1m ?? 0);
+    priceBlend.value = String(p.blend_per_1m ?? 0);
+  }
+  function readPriceFromInputs(){
+    return {
+      in_per_1m: Number(priceIn.value || 0),
+      out_per_1m: Number(priceOut.value || 0),
+      blend_per_1m: Number(priceBlend.value || 0),
+    };
+  }
+
+  function estimateCostUSD(row, price){
+    // row: {prompt_tokens, completion_tokens, total_tokens}
+    const pt = Number(row.prompt_tokens ?? 0);
+    const ct = Number(row.completion_tokens ?? 0);
+    const tt = Number(row.total_tokens ?? (pt + ct) ?? 0);
+
+    // 优先按拆分计算；没有拆分就用 blend
+    if((pt > 0 || ct > 0) && (price.in_per_1m > 0 || price.out_per_1m > 0)){
+      return (pt/1e6) * price.in_per_1m + (ct/1e6) * price.out_per_1m;
+    }
+    return (tt/1e6) * (price.blend_per_1m || 0);
+  }
+
+  function formatUSD(x){
+    const n = Number(x || 0);
+    return `$${n.toFixed(4)}`;
+  }
+
+  // =========================
+  // LLM Panel Render
+  // =========================
+  function renderKVList(container, obj, topN=8, price=null){
+    if(!container) return;
+    if(!obj || typeof obj !== "object"){
+      container.innerHTML = `<div class="muted tiny">-</div>`;
+      return;
+    }
+
+    const rows = Object.entries(obj)
+      .map(([k,v]) => {
+        const calls = v.calls ?? 0;
+        const tokens = v.tokens ?? 0;
+        const err = v.errors ?? 0;
+        const lat = v.avg_latency_ms ?? 0;
+        let cost = 0;
+        if(price){
+          // summary 里只有 tokens（通常无拆分），用 blend 估
+          cost = (Number(tokens)/1e6) * (price.blend_per_1m || 0);
+        }
+        return {k, calls, tokens, err, lat, cost};
+      })
+      .sort((a,b) => (b.cost - a.cost) || (b.tokens - a.tokens) || (b.calls - a.calls))
+      .slice(0, topN);
+
+    if(rows.length === 0){
+      container.innerHTML = `<div class="muted tiny">-</div>`;
+      return;
+    }
+
+    container.innerHTML = rows.map(r => `
+      <div class="row" style="justify-content:space-between; gap:10px; padding:4px 0; border-bottom:1px dashed rgba(31,51,84,.35);">
+        <div class="mono" style="max-width:55%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(r.k)}</div>
+        <div class="mono" style="text-align:right;">
+          <span class="muted">calls</span> ${r.calls}
+          · <span class="muted">tok</span> ${r.tokens}
+          · <span class="muted">err</span> ${r.err}
+          · <span class="muted">ms</span> ${r.lat}
+          ${price ? `· <span class="muted">cost</span> ${formatUSD(r.cost)}` : ``}
+        </div>
+      </div>
+    `).join("");
+  }
+
+  function renderRecentCalls(items, price){
+    if(!llmRecent) return;
+    llmRecent.innerHTML = "";
+    if(!items || !items.length){
+      llmRecent.innerHTML = `<div class="muted tiny">暂无 LLM 调用记录（最近 1 小时）。</div>`;
+      return;
+    }
+
+    const show = items.slice(0, 20);
+    for(const r of show){
+      const ok = r.ok ? "OK" : "ERR";
+      const sevClass = r.ok ? "sevINFO" : "sevERROR";
+      const est = estimateCostUSD(r, price);
+
+      const pt = Number(r.prompt_tokens ?? 0);
+      const ct = Number(r.completion_tokens ?? 0);
+      const tt = Number(r.total_tokens ?? 0);
+
+      const line = document.createElement("div");
+      line.className = "logline";
+      line.innerHTML = `
+        <span class="ts">${escapeHtml(r.ts || "")}</span>
+        <span class="${sevClass}" style="margin-left:8px;">${ok}</span>
+        <span class="muted" style="margin-left:8px;">tok</span> <span class="mono">${escapeHtml(tt)}</span>
+        <span class="muted" style="margin-left:8px;">ms</span> <span class="mono">${escapeHtml(r.latency_ms ?? 0)}</span>
+        <span class="muted" style="margin-left:8px;">est</span> <span class="mono">${escapeHtml(formatUSD(est))}</span>
+        <br/>
+        <span class="muted">split</span> <span class="mono">in:${escapeHtml(pt)} out:${escapeHtml(ct)}</span>
+        <span class="muted" style="margin-left:10px;">action</span> <span class="mono">${escapeHtml(r.action || "-")}</span>
+        <br/>
+        <span class="muted">endpoint</span> <span class="mono">${escapeHtml(r.endpoint || "-")}</span>
+        <span class="muted" style="margin-left:10px;">event</span> <span class="mono">${escapeHtml(r.event_id || "-")}</span>
+        <span class="muted" style="margin-left:10px;">intent</span> <span class="mono">${escapeHtml(r.intent || "-")}</span>
+        ${r.error ? `<br/><span class="sevERROR">${escapeHtml(r.error)}</span>` : ``}
+      `;
+      llmRecent.appendChild(line);
+    }
+  }
+
+  async function refreshLLMPanel(){
+    // 价格（每次刷新都读一次，保证你改了立即生效）
+    const price = loadPrice();
+
+    try{
+      const sum = await api(`/api/llm/summary?window_s=${WINDOW_S}`);
+      const s = sum?.summary || {};
+
+      if(llmCalls) llmCalls.textContent = String(s.calls ?? 0);
+      if(llmErrors) llmErrors.textContent = String(s.errors ?? 0);
+      if(llmTokens) llmTokens.textContent = String(s.total_tokens ?? 0);
+      if(llmAvgLat) llmAvgLat.textContent = String(s.avg_latency_ms ?? 0);
+
+      // 总成本：如果 summary 有拆分字段也可用；一般只有 total_tokens -> blend
+      const totalTok = Number(s.total_tokens ?? 0);
+      const totalCost = (totalTok/1e6) * (price.blend_per_1m || 0);
+      if(llmCostTotal) llmCostTotal.textContent = formatUSD(totalCost);
+
+      renderKVList(llmByAction, s.by_action || {}, 8, price);
+      renderKVList(llmByEndpoint, s.by_endpoint || {}, 8, price);
+
+      const usage = await api(`/api/llm/usage?window_s=${WINDOW_S}&limit=50`);
+      const items = usage?.items || [];
+      renderRecentCalls(items, price);
+
+      if(llmUpdatedAt) llmUpdatedAt.textContent = escapeHtml(sum.generated_at || usage.generated_at || "-");
+    }catch(e){
+      if(llmUpdatedAt) llmUpdatedAt.textContent = "LLM 面板不可用";
+    }
+  }
+
+  // =========================
+  // Copilot Chat
+  // =========================
+  async function sendChat(text){
+    const msg = text.trim();
+    if(!msg) return;
+    pushBubble(msg, "me");
+
+    try{
+      const payload = {
+        session_id: "demo",
+        message: msg,
+        context: { selected_event_id: selectedEventId }
+      };
+      const r = await api("/api/copilot/chat", { method:"POST", body: JSON.stringify(payload) });
+
+      pushBubble(r.reply || "(no reply)", "ai");
+
+      await refreshFocus();
+
+      if(r.analysis) renderAnalysis(r.analysis);
+    }catch(e){
+      pushBubble("调用 Copilot 失败：请确认后端已启动，并允许 CORS。", "ai");
+    }
+  }
+
+  // === Wiring ===
+  btnSend.onclick = () => { sendChat(chatInput.value); chatInput.value=""; chatInput.focus(); };
+  chatInput.addEventListener("keydown", (e) => {
+    if(e.key === "Enter"){ btnSend.click(); }
+  });
+
+  document.querySelectorAll("[data-q]").forEach(btn => {
+    btn.onclick = () => sendChat(btn.getAttribute("data-q"));
+  });
+
+  btnRefresh.onclick = async () => {
+    await refreshAll(true);
+  };
+
+  // 保存价格
+  btnSavePrice.onclick = () => {
+    const p = readPriceFromInputs();
+    savePrice(p);
+    pushBubble(`已保存价格：in=${p.in_per_1m}/1M, out=${p.out_per_1m}/1M, blend=${p.blend_per_1m}/1M`, "ai");
+  };
+
+  async function refreshAll(force=false){
+    await refreshHealth();
+    await refreshEvents();
+    await refreshFocus();
+    await refreshLLMPanel();
+  }
+
+  // === Init ===
+  (async () => {
+    // 默认价格（你可以自己改）
+    const p = loadPrice();
+    applyPriceToInputs(p);
+
+    pushBubble("我已经帮你看完系统了。你可以点按钮或自由提问。", "ai");
+    await refreshAll(true);
+    setInterval(() => refreshAll(false), REFRESH_MS);
+  })();
+})();
+</script>
+</body>
+</html>

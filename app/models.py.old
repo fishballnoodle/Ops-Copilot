@@ -1,0 +1,132 @@
+from __future__ import annotations
+
+from typing import Any, Dict, List, Literal, Optional
+from pydantic import BaseModel, Field
+
+
+RiskLevel = Literal["LOW", "MEDIUM", "HIGH"]
+
+
+class Source(BaseModel):
+    type: str = "switch"
+    vendor: Optional[str] = None
+    name: str
+    id: Optional[str] = None
+
+
+class Entity(BaseModel):
+    type: str
+    name: str
+
+
+class EvidenceLog(BaseModel):
+    log_id: str
+    ts: str
+    raw: str
+    fields: Dict[str, Any] = Field(default_factory=dict)
+
+
+class EvidenceMetric(BaseModel):
+    name: str
+    value: Any
+    unit: Optional[str] = None
+    ts: str
+
+
+class Evidence(BaseModel):
+    logs: List[EvidenceLog] = Field(default_factory=list)
+    metrics: List[EvidenceMetric] = Field(default_factory=list)
+
+
+class Event(BaseModel):
+    event_id: str
+    ts: str
+    source: Source
+    category: str
+    title: str
+    severity_hint: Literal["INFO", "WARN", "ERROR"] = "INFO"
+    entities: List[Entity] = Field(default_factory=list)
+    labels: List[str] = Field(default_factory=list)
+    evidence: Evidence = Field(default_factory=Evidence)
+    fingerprint: Optional[str] = None
+    aggregate: Optional[Dict[str, Any]] = None
+
+
+class Risk(BaseModel):
+    level: RiskLevel
+    confidence: float = Field(ge=0, le=1)
+    impact: str
+    spread: str
+
+
+class PossibleCause(BaseModel):
+    rank: int
+    cause: str
+    confidence: float = Field(ge=0, le=1)
+
+
+class ActionItem(BaseModel):
+    priority: int
+    action: str
+    why: str
+
+
+class EvidenceRef(BaseModel):
+    type: Literal["log", "metric"]
+    id: Optional[str] = None
+    name: Optional[str] = None
+    ts: Optional[str] = None
+
+
+class TimelineItem(BaseModel):
+    ts: str
+    note: str
+
+
+class Analysis(BaseModel):
+    summary: str
+    risk: Risk
+    possible_causes: List[PossibleCause] = Field(default_factory=list)
+    actions: List[ActionItem] = Field(default_factory=list)
+    evidence_refs: List[EvidenceRef] = Field(default_factory=list)
+    narrative_timeline: List[TimelineItem] = Field(default_factory=list)
+    should_page_someone: bool = False
+
+
+class IngestResponse(BaseModel):
+    accepted: int
+    event_ids: List[str]
+
+
+class FocusItem(BaseModel):
+    event_id: str
+    title: str
+    risk_level: RiskLevel
+    one_line: str
+    score: float
+
+
+class FocusResponse(BaseModel):
+    items: List[FocusItem]
+
+
+QuestionKey = Literal["now_status", "what_happened", "impact", "next_steps", "do_nothing"]
+
+
+class AnalyzeRequest(BaseModel):
+    event_id: str
+    question: QuestionKey
+    context: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ChatRequest(BaseModel):
+    session_id: str
+    message: str
+    context: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    focus: List[Dict[str, Any]] = Field(default_factory=list)
+    analysis: Optional[Analysis] = None
+
