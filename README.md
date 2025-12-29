@@ -1,4 +1,4 @@
-# Ops Copilot (v0.1.0)
+# Ops Copilot (1.0)
 
 An AI-first operations copilot for network & infrastructure teams.
 
