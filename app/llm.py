@@ -1,66 +1,72 @@
 # app/llm.py
 from __future__ import annotations
 
-import json
 import os
+import json
 import time
 from typing import Any, Dict, Optional
 
 from openai import OpenAI
 
-from app.llm_ledger import append_row
+from app.llm_ledger import ledger_record
 
 
-SYSTEM_PROMPT = """
-You are an on-call network operations copilot.
+def json_safe(x: Any) -> Any:
+    """
+    把任何对象尽量转换成可 JSON 序列化的结构，避免 TypeError: not JSON serializable
+    - pydantic v2 BaseModel: 有 model_dump
+    - dataclass / obj: 有 __dict__
+    - set/tuple: 转 list
+    - 其它: str()
+    """
+    if x is None:
+        return None
+    if isinstance(x, (str, int, float, bool)):
+        return x
+    if isinstance(x, dict):
+        return {str(k): json_safe(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple, set)):
+        return [json_safe(i) for i in x]
 
-Rules:
-- Output MUST be valid JSON and nothing else.
-- Do NOT invent facts.
-- Be concise and practical.
-- Prefer network/firewall/switch interpretation.
+    # pydantic v2
+    if hasattr(x, "model_dump"):
+        try:
+            return json_safe(x.model_dump())
+        except Exception:
+            pass
 
-Return JSON schema:
-{
-  "overall": {
-    "summary": string,
-    "risk_level": "LOW|MEDIUM|HIGH",
-    "what_changed": [string],
-    "quick_checks": [string]
-  },
-  "top": [
-    {
-      "event_id": string,
-      "title": string,
-      "category": string,
-      "count": number,
-      "first_seen": string|null,
-      "last_seen": string|null,
-      "why_it_matters": string,
-      "next_steps": [string],
-      "confidence": number
-    }
-  ]
-}
-""".strip()
+    # pydantic v1
+    if hasattr(x, "dict"):
+        try:
+            return json_safe(x.dict())
+        except Exception:
+            pass
+
+    # 普通对象
+    if hasattr(x, "__dict__"):
+        try:
+            return json_safe(vars(x))
+        except Exception:
+            pass
+
+    # 最后兜底
+    try:
+        return json_safe(str(x))
+    except Exception:
+        return "<unserializable>"
 
 
-_client = OpenAI(
-    api_key=os.environ.get("DEEPSEEK_API_KEY"),
-    base_url=os.environ.get("DEEPSEEK_BASE_URL"),
-)
-
-
-def _extract_json(text: str) -> dict:
+def _extract_json(text: str) -> Dict[str, Any]:
+    """
+    容忍 LLM 输出里带 ```json ``` 包裹或前后有杂质。
+    """
     t = (text or "").strip()
     if not t:
         raise ValueError("LLM returned empty content")
 
-    # 1) 纯 JSON
     if t.startswith("{"):
         return json.loads(t)
 
-    # 2) ```json ... ``` / ``` ... ```
     if "```" in t:
         parts = t.split("```")
         for p in parts:
@@ -70,74 +76,95 @@ def _extract_json(text: str) -> dict:
             if p.startswith("{"):
                 return json.loads(p)
 
-    # 3) 文本里截取第一个 JSON 对象
     start = t.find("{")
     end = t.rfind("}")
     if start != -1 and end != -1 and end > start:
-        return json.loads(t[start:end + 1])
+        return json.loads(t[start : end + 1])
 
     raise ValueError(f"No JSON found in LLM response (head): {t[:300]}")
 
 
-def _usage_get(usage: Any, key: str, default: int = 0) -> int:
-    """
-    兼容 OpenAI SDK usage 可能是 dict 或对象
-    """
-    if usage is None:
-        return default
-    if isinstance(usage, dict):
-        return int(usage.get(key) or default)
-    return int(getattr(usage, key, default) or default)
+_client = OpenAI(
+    api_key=os.environ.get("DEEPSEEK_API_KEY"),
+    base_url=os.environ.get("DEEPSEEK_BASE_URL"),
+)
 
 
-def call_llm_json(*, events_for_llm: Any, window: str, meta: Optional[Dict[str, Any]] = None) -> dict:
+def call_deepseek_json(
+    *,
+    system_prompt: str,
+    user_payload: Dict[str, Any],
+    action: str,
+    endpoint: str,
+    event_id: Optional[str] = None,
+    intent: Optional[str] = None,
+    temperature: float = 0.2,
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
     """
-    events_for_llm: 你传入的 payload（通常是 dict，包含 intent/question/events）
-    window: 字符串窗口描述，如 last_1h
-    meta: 用于 ledger 统计（action/endpoint/event_id/intent）
+    统一的 LLM 调用入口：返回 dict，并把用量写入 ledger（jsonl）。
     """
-    user_payload = {"window": window, "events": events_for_llm}
+    model = model or os.environ.get("DEEPSEEK_MODEL") or "deepseek-chat"
+    started = time.time()
 
-    t0 = time.time()
-    ok = False
-    err: Optional[str] = None
-    usage: Any = None
+    prompt_tokens = 0
+    completion_tokens = 0
+    total_tokens = 0
 
     try:
+        payload_safe = json_safe(user_payload)
+
         resp = _client.chat.completions.create(
-            model=os.environ.get("DEEPSEEK_MODEL"),
+            model=model,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+                {"role": "system", "content": system_prompt.strip()},
+                {"role": "user", "content": json.dumps(payload_safe, ensure_ascii=False)},
             ],
-            temperature=0.2,
+            temperature=temperature,
         )
 
+        latency_ms = int((time.time() - started) * 1000)
+
+        # DeepSeek(OpenAI兼容)通常会返回 usage
         usage = getattr(resp, "usage", None)
+        if usage:
+            prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+            completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+            total_tokens = int(getattr(usage, "total_tokens", 0) or 0)
+
         text = (resp.choices[0].message.content or "")
-        out = _extract_json(text)
-        ok = True
-        return out
+        data = _extract_json(text)
+
+        ledger_record(
+            ok=True,
+            action=action,
+            endpoint=endpoint,
+            event_id=event_id,
+            intent=intent,
+            model=model,
+            latency_ms=latency_ms,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            error=None,
+            meta={},
+        )
+        return data
 
     except Exception as e:
-        err = str(e)
+        latency_ms = int((time.time() - started) * 1000)
+        ledger_record(
+            ok=False,
+            action=action,
+            endpoint=endpoint,
+            event_id=event_id,
+            intent=intent,
+            model=model,
+            latency_ms=latency_ms,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            error=str(e),
+            meta={},
+        )
         raise
-
-    finally:
-        latency_ms = int((time.time() - t0) * 1000)
-
-        row = {
-            "ok": ok,
-            "action": (meta or {}).get("action", "call_llm_json"),
-            "endpoint": (meta or {}).get("endpoint", "-"),
-            "event_id": (meta or {}).get("event_id", "-"),
-            "intent": (meta or {}).get("intent", "-"),
-            "prompt_tokens": _usage_get(usage, "prompt_tokens", 0),
-            "completion_tokens": _usage_get(usage, "completion_tokens", 0),
-            "total_tokens": _usage_get(usage, "total_tokens", 0),
-            "latency_ms": latency_ms,
-        }
-        if err:
-            row["error"] = err
-
-        append_row(row)

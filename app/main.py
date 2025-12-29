@@ -6,26 +6,28 @@ import re
 import uuid
 import traceback
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Any, Dict
 
-from fastapi import FastAPI, HTTPException, Request, Body, Query
+from fastapi import FastAPI, HTTPException, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 
-import app.store as store_mod
 from app.models import (
-    Event, IngestResponse, FocusResponse, FocusItem,
-    AnalyzeRequest, ChatRequest, ChatResponse, Analysis
+    Event,
+    IngestResponse,
+    FocusResponse,
+    FocusItem,
+    AnalyzeRequest,
+    ChatRequest,
+    ChatResponse,
 )
 from app.store import InMemoryStore
 from app.scoring import score_event
 from app.copilot import detect_intent
-from app.copilot_deepseek import deepseek_analyze
-from app.llm import call_llm_json
-from app.llm_ledger import ledger_list, ledger_summary
 from app.ingest.syslog import parse_syslog
 
+from app.llm import call_deepseek_json, json_safe
+from app.llm_ledger import ledger_summary, ledger_list
 
-print("STORE MODULE PATH =", store_mod.__file__)
 
 app = FastAPI(title="Ops Copilot API", version="0.1.0")
 
@@ -38,14 +40,8 @@ app.add_middleware(
 )
 
 store = InMemoryStore()
-print("STORE INSTANCE TYPE =", type(store))
-print("STORE HAS ingest_event =", hasattr(store, "ingest_event"))
-print("STORE METHODS =", [n for n in dir(store) if n in ("ingest_event", "upsert_events", "list_events", "get_event", "recent_events")])
 
 
-# -----------------------------
-# helpers
-# -----------------------------
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -68,123 +64,115 @@ def _event_sort_key(e: Event) -> datetime:
 
 
 def _fingerprint_fallback(msg: str) -> str:
-    """
-    兜底：尽量去掉类似 H3C 前缀时间戳，避免每条都不一样。
-    """
     s = (msg or "").strip()
-
-    # 去掉 H3C 样式：%Aug 18 14:25:29:336 2025 H3C  这一段
     s = re.sub(
         r"^%[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}:\d{3}\s+\d{4}\s+H3C\s+",
         "H3C ",
-        s
+        s,
     )
-
-    # 再把可能的 “%Aug ...” 泛化一点点
-    s = re.sub(r"^%[A-Za-z]{3}\s+\d{1,2}\s+", "%MON DAY ", s)
-
     return s
 
 
+ANALYZE_SYSTEM_PROMPT = """
+You are an on-call network operations copilot for switches/firewalls.
+
+Rules:
+- Output MUST be valid JSON and nothing else.
+- Do NOT invent facts. Use only the provided event and context.
+- Be concise and practical.
+
+Return JSON schema EXACTLY:
+{
+  "summary": string,
+  "risk": {
+    "level": "LOW"|"MEDIUM"|"HIGH",
+    "confidence": number,
+    "impact": string,
+    "spread": string
+  },
+  "possible_causes": [
+    {"rank": number, "cause": string, "confidence": number}
+  ],
+  "actions": [
+    {"priority": number, "action": string, "why": string}
+  ],
+  "evidence_refs": [
+    {"type":"log","id":string} | {"type":"metric","name":string,"ts":string}
+  ],
+  "narrative_timeline": [
+    {"ts": string, "note": string}
+  ]
+}
+""".strip()
+
+
+CHAT_SYSTEM_PROMPT = """
+You are an on-call network operations copilot.
+
+Rules:
+- Output MUST be valid JSON and nothing else.
+- Do NOT invent facts. Use only provided events + context.
+- Be concise, action-oriented.
+
+Return JSON schema EXACTLY:
+{
+  "reply": string,
+  "analysis": {
+    "summary": string,
+    "risk": {"level":"LOW|MEDIUM|HIGH","confidence":number,"impact":string,"spread":string},
+    "possible_causes":[{"rank":number,"cause":string,"confidence":number}],
+    "actions":[{"priority":number,"action":string,"why":string}],
+    "evidence_refs":[{"type":"log","id":string} | {"type":"metric","name":string,"ts":string}],
+    "narrative_timeline":[{"ts":string,"note":string}]
+  }
+}
+""".strip()
+
+
+def _fill_analysis_defaults(data: Any) -> Dict[str, Any]:
+    if not isinstance(data, dict):
+        data = {}
+
+    data.setdefault("summary", "")
+    data.setdefault("risk", {})
+    if not isinstance(data["risk"], dict):
+        data["risk"] = {}
+    data["risk"].setdefault("level", "LOW")
+    data["risk"].setdefault("confidence", 0.0)
+    data["risk"].setdefault("impact", "-")
+    data["risk"].setdefault("spread", "-")
+
+    data.setdefault("possible_causes", [])
+    data.setdefault("actions", [])
+    data.setdefault("evidence_refs", [])
+    data.setdefault("narrative_timeline", [])
+    return data
+
+
 # -----------------------------
-# LLM ledger APIs（给前端面板用）
+# Health
+# -----------------------------
+@app.get("/api/health")
+def health():
+    llm = "deepseek" if os.getenv("DEEPSEEK_API_KEY") else "mock"
+    return {"status": "ok", "llm": llm, "version": app.version}
+
+
+# -----------------------------
+# LLM Ledger APIs
 # -----------------------------
 @app.get("/api/llm/summary")
-def llm_summary(window_s: int = Query(3600, ge=60, le=24 * 3600)):
-    return ledger_summary(window_s=window_s)
+def api_llm_summary(window_s: int = 3600):
+    return {"ok": True, "generated_at": _now_iso(), "summary": ledger_summary(window_s=window_s)}
 
 
 @app.get("/api/llm/usage")
-def llm_usage(window_s: int = Query(3600, ge=60, le=24 * 3600), limit: int = Query(50, ge=1, le=200)):
-    return ledger_list(window_s=window_s, limit=limit)
+def api_llm_usage(window_s: int = 3600, limit: int = 50):
+    return {"ok": True, "generated_at": _now_iso(), "window_s": window_s, "items": ledger_list(window_s=window_s, limit=limit)}
 
 
 # -----------------------------
-# Copilot Briefing（结构化输出）
-# -----------------------------
-@app.post("/api/copilot/ask")
-def copilot_ask(payload: dict = Body(...)):
-    q = (payload.get("question") or "").strip()
-    top = int(payload.get("top") or 3)
-
-    # 取 top 聚合事件
-    if hasattr(store, "recent_events"):
-        focus_items = store.recent_events(top)
-    else:
-        focus_items = store.list_events(limit=top)
-
-    def to_llm(e: Event) -> dict:
-        agg = getattr(e, "aggregate", None) or {}
-        return {
-            "event_id": e.event_id,
-            "title": e.title,
-            "category": e.category,
-            "fingerprint": e.fingerprint,
-            "count": agg.get("count") or 1,
-            "first_seen": agg.get("first_seen"),
-            "last_seen": agg.get("last_seen"),
-            "ts": e.ts,
-        }
-
-    events_for_llm = [to_llm(e) for e in focus_items]
-    intent = detect_intent(q)
-
-    result = call_llm_json(
-        events_for_llm={
-            "intent": intent,
-            "question": q,
-            "events": events_for_llm,
-        },
-        window="last_1h",
-        meta={"action": "ask", "endpoint": "/api/copilot/ask", "intent": intent},
-    )
-    result["intent"] = intent
-    return result
-
-
-@app.get("/api/copilot/briefing")
-def copilot_briefing(top: int = 3, window: str = "last_1h"):
-    try:
-        if hasattr(store, "recent_events"):
-            focus_items = store.recent_events(top)
-        else:
-            focus_items = store.list_events(limit=top)
-
-        def to_llm(e: Event) -> dict:
-            agg = getattr(e, "aggregate", None) or {}
-            return {
-                "event_id": getattr(e, "event_id", None),
-                "title": getattr(e, "title", None),
-                "category": getattr(e, "category", None),
-                "ts": getattr(e, "ts", None),
-                "fingerprint": getattr(e, "fingerprint", None),
-                "aggregate": agg,
-            }
-
-        events_for_llm = [to_llm(e) for e in focus_items]
-        briefing = call_llm_json(
-            events_for_llm=events_for_llm,
-            window=window,
-            meta={"action": "briefing", "endpoint": "/api/copilot/briefing"},
-        )
-
-        briefing["ok"] = True
-        briefing["generated_at"] = _now_iso()
-        briefing["window"] = window
-        return briefing
-
-    except Exception as e:
-        return {
-            "ok": False,
-            "generated_at": _now_iso(),
-            "window": window,
-            "error": str(e),
-            "trace_tail": traceback.format_exc().splitlines()[-25:],
-        }
-
-
-# -----------------------------
-# Ingest Syslog（关键：用 parse_syslog）
+# Ingest Syslog
 # -----------------------------
 @app.post("/api/ingest/syslog")
 async def ingest_syslog(req: Request):
@@ -193,7 +181,7 @@ async def ingest_syslog(req: Request):
     host = payload.get("host") or "unknown"
     program = payload.get("program") or "syslog"
     msg = payload.get("msg") or ""
-    ts = payload.get("timestamp") or datetime.now(timezone.utc).isoformat()
+    ts = payload.get("timestamp") or _now_iso()
 
     parsed = {}
     try:
@@ -203,7 +191,6 @@ async def ingest_syslog(req: Request):
 
     category = payload.get("category") or parsed.get("category") or "SYSLOG"
     title = payload.get("title") or parsed.get("title") or f"{host} {program}: {msg[:80]}".strip()
-
     fp = (
         payload.get("fingerprint")
         or parsed.get("fingerprint")
@@ -216,26 +203,12 @@ async def ingest_syslog(req: Request):
         fingerprint=fp,
         category=category,
         title=title,
-        source={
-            "name": f"{host}",
-            "kind": "syslog",
-            "host": host,
-            "program": program,
-        },
+        source={"name": host, "kind": "syslog", "host": host, "program": program},
         raw={"message": msg, "payload": payload, "parsed": parsed},
     )
 
     store.upsert_events([e])
     return {"ok": True, "event_id": e.event_id, "fingerprint": fp, "title": title, "category": category}
-
-
-# -----------------------------
-# Health
-# -----------------------------
-@app.get("/api/health")
-def health():
-    llm = "deepseek" if os.getenv("DEEPSEEK_API_KEY") else "mock"
-    return {"status": "ok", "llm": llm, "version": app.version}
 
 
 # -----------------------------
@@ -252,21 +225,18 @@ def list_events(limit: int = 20):
     try:
         return store.list_events(limit=limit)
     except TypeError:
-        if hasattr(store, "recent_events"):
-            items = store.recent_events(limit=limit)  # type: ignore
-        else:
-            items = store.list_events(limit=limit)
+        items = store.recent_events(limit=limit) if hasattr(store, "recent_events") else store.list_events(limit=limit)
         items = list(items)
         items.sort(key=_event_sort_key, reverse=True)
         return items
 
 
 # -----------------------------
-# Focus（Top N）
+# Focus
 # -----------------------------
 @app.get("/api/focus", response_model=FocusResponse)
 def focus(top: int = 3):
-    events = store.recent_events(limit=50)
+    events = store.recent_events(limit=50) if hasattr(store, "recent_events") else store.list_events(limit=50)
 
     scored = []
     for e in events:
@@ -277,27 +247,19 @@ def focus(top: int = 3):
         fs = agg.get("first_seen")
         ls = agg.get("last_seen")
 
-        one_line = ""
-        if "MAC_FLAPPING" in (e.category or "").upper():
+        cat_u = (e.category or "").upper()
+        fp_u = (e.fingerprint or "").upper()
+        title_u = (e.title or "").upper()
+
+        if "MAC_FLAPPING" in cat_u or "MAC_FLAPPING" in fp_u or "MAC_FLAPPING" in title_u:
             if lvl == "HIGH":
-                one_line = (
-                    f"高频 MAC 漂移（{cnt} 次，{fs} ~ {ls}），"
-                    "高度怀疑二层环路/聚合口异常/转发表震荡，建议立即排查并必要时隔离端口。"
-                )
+                one_line = f"高频 MAC 漂移（{cnt}次，{fs}~{ls}），优先排查环路/聚合口，必要时隔离端口。"
             elif lvl == "MEDIUM":
-                one_line = (
-                    f"MAC 漂移（{cnt} 次，{fs} ~ {ls}），"
-                    "建议检查 STP 状态、聚合口配置一致性及上下联口。"
-                )
+                one_line = f"MAC 漂移（{cnt}次，{fs}~{ls}），建议查 STP/Trunk/上联口一致性。"
             else:
-                one_line = f"偶发 MAC 漂移（{cnt} 次），可能为主机迁移或短暂抖动，可继续观察。"
+                one_line = f"偶发 MAC 漂移（{cnt}次），可能为迁移或短暂抖动，可观察。"
         else:
-            if lvl == "HIGH":
-                one_line = "高风险事件，可能对核心业务产生影响，建议立即确认并处理。"
-            elif lvl == "MEDIUM":
-                one_line = "存在一定风险，建议尽快确认影响范围与根因。"
-            else:
-                one_line = "当前风险较低，可先观察是否继续出现。"
+            one_line = "当前风险较低，可先观察是否继续出现。" if lvl == "LOW" else "建议尽快确认影响范围与根因。"
 
         scored.append((float(score), lvl, e, one_line))
 
@@ -317,14 +279,38 @@ def focus(top: int = 3):
 
 
 # -----------------------------
-# Analyze（DeepSeek）
+# Analyze
 # -----------------------------
-@app.post("/api/copilot/analyze", response_model=Analysis)
+@app.post("/api/copilot/analyze")
 def copilot_analyze(req: AnalyzeRequest):
     e = store.get_event(req.event_id)
     if not e:
         raise HTTPException(status_code=404, detail="event not found")
-    return deepseek_analyze(e, req)
+
+    payload = {
+        "question": req.question,
+        "event": {
+            "event_id": e.event_id,
+            "ts": e.ts,
+            "title": e.title,
+            "category": e.category,
+            "fingerprint": e.fingerprint,
+            "aggregate": getattr(e, "aggregate", None) or {},
+            "raw": e.raw,
+        },
+        "context": json_safe(getattr(req, "context", None) or {}),
+    }
+
+    data = call_deepseek_json(
+        system_prompt=ANALYZE_SYSTEM_PROMPT,
+        user_payload=payload,
+        action="analyze",
+        endpoint="/api/copilot/analyze",
+        event_id=e.event_id,
+        intent=req.question,
+        temperature=0.2,
+    )
+    return _fill_analysis_defaults(data)
 
 
 @app.get("/api/incidents/{event_id}/timeline")
@@ -332,12 +318,39 @@ def incident_timeline(event_id: str):
     e = store.get_event(event_id)
     if not e:
         raise HTTPException(status_code=404, detail="event not found")
-    analysis = deepseek_analyze(e, AnalyzeRequest(event_id=event_id, question="what_happened"))
-    return {"event_id": event_id, "timeline": analysis.narrative_timeline}
+
+    payload = {
+        "question": "what_happened",
+        "event": {
+            "event_id": e.event_id,
+            "ts": e.ts,
+            "title": e.title,
+            "category": e.category,
+            "fingerprint": e.fingerprint,
+            "aggregate": getattr(e, "aggregate", None) or {},
+            "raw": e.raw,
+        },
+        "context": {},
+    }
+
+    data = call_deepseek_json(
+        system_prompt=ANALYZE_SYSTEM_PROMPT,
+        user_payload=payload,
+        action="timeline",
+        endpoint="/api/incidents/{event_id}/timeline",
+        event_id=e.event_id,
+        intent="what_happened",
+        temperature=0.2,
+    )
+
+    tl = []
+    if isinstance(data, dict):
+        tl = data.get("narrative_timeline") or []
+    return {"event_id": event_id, "timeline": tl}
 
 
 # -----------------------------
-# Chat（自由模式：走 DeepSeek analyze）
+# Chat (统计 token)
 # -----------------------------
 @app.post("/api/copilot/chat", response_model=ChatResponse)
 def copilot_chat(req: ChatRequest):
@@ -355,28 +368,47 @@ def copilot_chat(req: ChatRequest):
         f = focus(top=1).items
         selected = f[0].event_id if f else None
 
+    e = store.get_event(selected) if selected else None
     intent = detect_intent(msg)
 
-    q = "free_chat"
-    if intent in ("now_status", "status"):
-        q = "now_status"
-    elif intent in ("what_happened", "summary"):
-        q = "what_happened"
-    elif intent in ("impact", "urgency", "risk"):
-        q = "impact"
-    elif intent in ("next_steps", "actions"):
-        q = "next_steps"
-    elif intent in ("do_nothing", "consequence"):
-        q = "do_nothing"
+    payload: Dict[str, Any] = {
+        "message": msg,
+        "intent": intent,
+        "selected_event_id": selected,
+        "event": None,
+    }
 
-    analysis: Optional[Analysis] = None
-    if selected:
-        e = store.get_event(selected)
-        if e:
-            areq = AnalyzeRequest(event_id=selected, question=q, context={"intent": intent, "user_message": msg})
-            analysis = deepseek_analyze(e, areq)
+    if e:
+        payload["event"] = {
+            "event_id": e.event_id,
+            "ts": e.ts,
+            "title": e.title,
+            "category": e.category,
+            "fingerprint": e.fingerprint,
+            "aggregate": getattr(e, "aggregate", None) or {},
+            "raw": e.raw,
+        }
 
-    reply = analysis.summary if analysis else "我还没有收到事件数据。你可以先调用 /api/ingest/syslog 或 /api/events/ingest 上报一些事件。"
+    data = call_deepseek_json(
+        system_prompt=CHAT_SYSTEM_PROMPT,
+        user_payload=payload,
+        action="chat",
+        endpoint="/api/copilot/chat",
+        event_id=(e.event_id if e else None),
+        intent=intent,
+        temperature=0.2,
+    )
+
+    reply = ""
+    analysis = None
+    if isinstance(data, dict):
+        reply = str(data.get("reply") or "").strip()
+        analysis_raw = data.get("analysis")
+        if analysis_raw is not None:
+            analysis = _fill_analysis_defaults(analysis_raw)
+
+    if not reply:
+        reply = "我收到了你的问题，但没有拿到有效 JSON 回复（请检查 LLM 输出）。"
 
     f_items = focus(top=3).items
     focus_payload = [{"event_id": i.event_id, "risk_level": i.risk_level, "title": i.title} for i in f_items]
