@@ -4,167 +4,213 @@ from __future__ import annotations
 import os
 import json
 import time
+import re
 from typing import Any, Dict, Optional
 
-from openai import OpenAI
+try:
+    # openai>=1.x
+    from openai import OpenAI
+except Exception:  # pragma: no cover
+    OpenAI = None  # type: ignore
 
-from app.llm_ledger import ledger_record
+
+# -----------------------------
+# Config
+# -----------------------------
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+
+# NOTE: 你后面要做 token/成本统计，可以在这里接 llm_ledger（先保证能跑）
+_CLIENT: Optional[Any] = None
 
 
-def json_safe(x: Any) -> Any:
-    """
-    把任何对象尽量转换成可 JSON 序列化的结构，避免 TypeError: not JSON serializable
-    - pydantic v2 BaseModel: 有 model_dump
-    - dataclass / obj: 有 __dict__
-    - set/tuple: 转 list
-    - 其它: str()
-    """
-    if x is None:
+def _get_client() -> Optional[Any]:
+    global _CLIENT
+    if _CLIENT is not None:
+        return _CLIENT
+    if not OpenAI:
         return None
-    if isinstance(x, (str, int, float, bool)):
-        return x
-    if isinstance(x, dict):
-        return {str(k): json_safe(v) for k, v in x.items()}
-    if isinstance(x, (list, tuple, set)):
-        return [json_safe(i) for i in x]
+    if not DEEPSEEK_API_KEY:
+        return None
+    _CLIENT = OpenAI(
+        api_key=DEEPSEEK_API_KEY,
+        base_url=DEEPSEEK_BASE_URL,
+    )
+    return _CLIENT
 
-    # pydantic v2
-    if hasattr(x, "model_dump"):
+
+# -----------------------------
+# Utilities
+# -----------------------------
+def json_safe(obj: Any) -> Any:
+    """
+    让 payload 可 JSON 序列化，避免你之前 deepseek_analyze json.dumps 报错：
+    TypeError: Object of type ... is not JSON serializable
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, list):
+        return [json_safe(x) for x in obj]
+    if isinstance(obj, dict):
+        return {str(k): json_safe(v) for k, v in obj.items()}
+
+    # pydantic
+    if hasattr(obj, "model_dump"):
         try:
-            return json_safe(x.model_dump())
+            return json_safe(obj.model_dump())
+        except Exception:
+            pass
+    if hasattr(obj, "dict"):
+        try:
+            return json_safe(obj.dict())
         except Exception:
             pass
 
-    # pydantic v1
-    if hasattr(x, "dict"):
+    # dataclass / others
+    if hasattr(obj, "__dict__"):
         try:
-            return json_safe(x.dict())
+            return json_safe(vars(obj))
         except Exception:
             pass
 
-    # 普通对象
-    if hasattr(x, "__dict__"):
-        try:
-            return json_safe(vars(x))
-        except Exception:
-            pass
+    return str(obj)
 
-    # 最后兜底
-    try:
-        return json_safe(str(x))
-    except Exception:
-        return "<unserializable>"
+
+_JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
 def _extract_json(text: str) -> Dict[str, Any]:
     """
-    容忍 LLM 输出里带 ```json ``` 包裹或前后有杂质。
+    DeepSeek 有时会输出 ```json ...``` 或者带解释文字。
+    这里尽量从文本中抠出 JSON object。
     """
-    t = (text or "").strip()
-    if not t:
-        raise ValueError("LLM returned empty content")
+    text = (text or "").strip()
+    if not text:
+        return {}
 
-    if t.startswith("{"):
-        return json.loads(t)
+    # 直接就是 JSON
+    try:
+        j = json.loads(text)
+        if isinstance(j, dict):
+            return j
+    except Exception:
+        pass
 
-    if "```" in t:
-        parts = t.split("```")
-        for p in parts:
-            p = p.strip()
-            if p.lower().startswith("json"):
-                p = p[4:].strip()
-            if p.startswith("{"):
-                return json.loads(p)
+    # 尝试从中间抽取 {...}
+    m = _JSON_BLOCK_RE.search(text)
+    if m:
+        try:
+            j = json.loads(m.group(0))
+            if isinstance(j, dict):
+                return j
+        except Exception:
+            pass
 
-    start = t.find("{")
-    end = t.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        return json.loads(t[start : end + 1])
-
-    raise ValueError(f"No JSON found in LLM response (head): {t[:300]}")
-
-
-_client = OpenAI(
-    api_key=os.environ.get("DEEPSEEK_API_KEY"),
-    base_url=os.environ.get("DEEPSEEK_BASE_URL"),
-)
+    # 最后兜底：返回一个结构，避免上层崩
+    return {"raw_text": text}
 
 
+# -----------------------------
+# Core call (JSON result)
+# -----------------------------
 def call_deepseek_json(
     *,
-    system_prompt: str,
-    user_payload: Dict[str, Any],
-    action: str,
-    endpoint: str,
-    event_id: Optional[str] = None,
-    intent: Optional[str] = None,
+    system: str,
+    user: str,
     temperature: float = 0.2,
-    model: Optional[str] = None,
+    timeout_s: int = 60,
 ) -> Dict[str, Any]:
     """
-    统一的 LLM 调用入口：返回 dict，并把用量写入 ledger（jsonl）。
+    直接请求 deepseek-chat，并要求返回 JSON。
     """
-    model = model or os.environ.get("DEEPSEEK_MODEL") or "deepseek-chat"
-    started = time.time()
+    client = _get_client()
 
-    prompt_tokens = 0
-    completion_tokens = 0
-    total_tokens = 0
+    # 没 key 或 client 不可用：返回 mock，保证开发不阻塞
+    if not client:
+        return {
+            "ok": True,
+            "mock": True,
+            "note": "DEEPSEEK_API_KEY not set or OpenAI client unavailable",
+            "system": system[:200],
+            "user": user[:200],
+        }
 
+    t0 = time.time()
     try:
-        payload_safe = json_safe(user_payload)
-
-        resp = _client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt.strip()},
-                {"role": "user", "content": json.dumps(payload_safe, ensure_ascii=False)},
-            ],
+        resp = client.chat.completions.create(
+            model=DEEPSEEK_MODEL,
             temperature=temperature,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            timeout=timeout_s,
         )
+        t1 = time.time()
 
-        latency_ms = int((time.time() - started) * 1000)
+        content = ""
+        try:
+            content = resp.choices[0].message.content or ""
+        except Exception:
+            content = ""
 
-        # DeepSeek(OpenAI兼容)通常会返回 usage
-        usage = getattr(resp, "usage", None)
-        if usage:
-            prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
-            completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
-            total_tokens = int(getattr(usage, "total_tokens", 0) or 0)
+        data = _extract_json(content)
 
-        text = (resp.choices[0].message.content or "")
-        data = _extract_json(text)
+        # 附带一些调试信息（不影响你上层用）
+        data.setdefault("ok", True)
+        data.setdefault("_meta", {})
+        data["_meta"]["latency_ms"] = int((t1 - t0) * 1000)
+        data["_meta"]["model"] = DEEPSEEK_MODEL
 
-        ledger_record(
-            ok=True,
-            action=action,
-            endpoint=endpoint,
-            event_id=event_id,
-            intent=intent,
-            model=model,
-            latency_ms=latency_ms,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
-            error=None,
-            meta={},
-        )
+        # usage（如果有就带上，后面你做 token/cost 统计会用到）
+        try:
+            u = getattr(resp, "usage", None)
+            if u:
+                data["_meta"]["usage"] = {
+                    "prompt_tokens": getattr(u, "prompt_tokens", None),
+                    "completion_tokens": getattr(u, "completion_tokens", None),
+                    "total_tokens": getattr(u, "total_tokens", None),
+                }
+        except Exception:
+            pass
+
         return data
 
     except Exception as e:
-        latency_ms = int((time.time() - started) * 1000)
-        ledger_record(
-            ok=False,
-            action=action,
-            endpoint=endpoint,
-            event_id=event_id,
-            intent=intent,
-            model=model,
-            latency_ms=latency_ms,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
-            error=str(e),
-            meta={},
-        )
-        raise
+        return {
+            "ok": False,
+            "error": str(e),
+        }
+
+
+def call_llm_json(*, events_for_llm: Any, window: str = "last_1h") -> Dict[str, Any]:
+    """
+    给 /api/copilot/briefing 或 /api/copilot/ask 用的“摘要型 JSON”接口。
+    你 main.py 里 import 的就是这个名字：call_llm_json ✅
+    """
+    system = (
+        "你是一个运维指挥中心 Copilot。"
+        "你会基于输入的事件列表，输出结构化 JSON，总结当前最重要的问题与建议。"
+        "务必只输出 JSON 对象，不要输出额外解释文字。"
+    )
+
+    payload = {
+        "window": window,
+        "events": json_safe(events_for_llm),
+        "output_schema": {
+            "summary": "string",
+            "top_risks": [
+                {"event_id": "string", "risk": "LOW|MEDIUM|HIGH", "why": "string"}
+            ],
+            "next_steps": [
+                {"priority": 1, "action": "string", "why": "string"}
+            ],
+        },
+    }
+
+    user = json.dumps(payload, ensure_ascii=False)
+
+    return call_deepseek_json(system=system, user=user, temperature=0.2)

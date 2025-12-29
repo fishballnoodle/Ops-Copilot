@@ -167,9 +167,9 @@
     <div class="right">
       <div class="pill">API: <b id="apiBaseText"></b></div>
       <div class="pill">状态: <b id="apiStatus">未知</b></div>
-            <div class="pill">TZ: <b id="tzText" class="mono"></b></div>
+      <div class="pill">TZ: <b id="tzText" class="mono"></b></div>
       <button class="btn" id="btnTZ">时区</button>
-<button class="btn" id="btnRefresh">刷新</button>
+      <button class="btn" id="btnRefresh">刷新</button>
     </div>
   </header>
 
@@ -398,6 +398,7 @@
   apiBaseText.textContent = API_BASE;
 
   if(tzText) tzText.textContent = TZ;
+
   // === State ===
   let selectedEventId = null;
   let lastEvents = [];
@@ -453,11 +454,9 @@
       .replaceAll("'","&#039;");
   }
 
-
   // === Timezone formatting ===
   function _toDate(ts){
     if(!ts) return null;
-    // 兼容 ISO / 带 Z / 带 +00:00
     const d = new Date(ts);
     if(isNaN(d.getTime())) return null;
     return d;
@@ -474,16 +473,10 @@
       });
       return fmt.format(d);
     }catch(e){
-      // 如果浏览器不支持该时区标识，就退回本地时间
       return d.toLocaleString();
     }
   }
-  function fmtIsoWithTz(ts){
-    // 展示：本地/指定TZ + 原始 ISO（用于对照）
-    const raw = String(ts || "");
-    const local = fmtTs(raw);
-    return local + (raw ? ` (raw ${raw})` : "");
-  }
+
   function renderFocus(items){
     focusList.innerHTML = "";
     if(!items || items.length === 0){
@@ -662,16 +655,28 @@
     };
   }
 
+  // ✅ 新增：如果 blend=0 但填了 in/out，则自动用均值当 blend（仅用于计算）
+  function effectivePrice(p){
+    const inP = Number(p.in_per_1m || 0);
+    const outP = Number(p.out_per_1m || 0);
+    let blend = Number(p.blend_per_1m || 0);
+    if((!blend || blend <= 0) && (inP > 0 || outP > 0)){
+      const denom = (inP > 0 && outP > 0) ? 2 : 1;
+      blend = ((inP > 0 ? inP : 0) + (outP > 0 ? outP : 0)) / denom;
+    }
+    return { in_per_1m: inP, out_per_1m: outP, blend_per_1m: blend };
+  }
+
   function estimateCostUSD(row, price){
-    // row: {prompt_tokens, completion_tokens, total_tokens}
     const pt = Number(row.prompt_tokens ?? 0);
     const ct = Number(row.completion_tokens ?? 0);
     const tt = Number(row.total_tokens ?? (pt + ct) ?? 0);
 
-    // 优先按拆分计算；没有拆分就用 blend
+    // 拆分优先
     if((pt > 0 || ct > 0) && (price.in_per_1m > 0 || price.out_per_1m > 0)){
       return (pt/1e6) * price.in_per_1m + (ct/1e6) * price.out_per_1m;
     }
+    // fallback 用 blend
     return (tt/1e6) * (price.blend_per_1m || 0);
   }
 
@@ -698,7 +703,7 @@
         const lat = v.avg_latency_ms ?? 0;
         let cost = 0;
         if(price){
-          // summary 里只有 tokens（通常无拆分），用 blend 估
+          // summary 的 by_action/by_endpoint 通常只有 tokens → 用有效 blend 估
           cost = (Number(tokens)/1e6) * (price.blend_per_1m || 0);
         }
         return {k, calls, tokens, err, lat, cost};
@@ -766,9 +771,11 @@
 
   async function refreshLLMPanel(){
     // 价格（每次刷新都读一次，保证你改了立即生效）
-    const price = loadPrice();
+    const p0 = loadPrice();
+    const price = effectivePrice(p0);
 
     try{
+      // 先取 summary（用于 calls/tokens/lat 以及 by_action/by_endpoint）
       const sum = await api(`/api/llm/summary?window_s=${WINDOW_S}`);
       const s = sum?.summary || {};
 
@@ -777,17 +784,26 @@
       if(llmTokens) llmTokens.textContent = String(s.total_tokens ?? 0);
       if(llmAvgLat) llmAvgLat.textContent = String(s.avg_latency_ms ?? 0);
 
-      // 总成本：如果 summary 有拆分字段也可用；一般只有 total_tokens -> blend
-      const totalTok = Number(s.total_tokens ?? 0);
-      const totalCost = (totalTok/1e6) * (price.blend_per_1m || 0);
-      if(llmCostTotal) llmCostTotal.textContent = formatUSD(totalCost);
-
       renderKVList(llmByAction, s.by_action || {}, 8, price);
       renderKVList(llmByEndpoint, s.by_endpoint || {}, 8, price);
 
-      const usage = await api(`/api/llm/usage?window_s=${WINDOW_S}&limit=50`);
+      // ✅ 再取 usage：用最近明细逐条估算“总成本”（更准）
+      const usage = await api(`/api/llm/usage?window_s=${WINDOW_S}&limit=200`);
       const items = usage?.items || [];
+
       renderRecentCalls(items, price);
+
+      let totalCost = 0;
+      if(items && items.length){
+        for(const r of items){
+          totalCost += estimateCostUSD(r, price);
+        }
+      }else{
+        // usage 没数据时 fallback：summary.total_tokens * blend
+        const totalTok = Number(s.total_tokens ?? 0);
+        totalCost = (totalTok/1e6) * (price.blend_per_1m || 0);
+      }
+      if(llmCostTotal) llmCostTotal.textContent = formatUSD(totalCost);
 
       if(llmUpdatedAt) llmUpdatedAt.textContent = escapeHtml(fmtTs(sum.generated_at || usage.generated_at || "-"));
     }catch(e){
@@ -835,7 +851,6 @@
     await refreshAll(true);
   };
 
-
   // 切换时区（保存到浏览器）
   if(btnTZ){
     btnTZ.onclick = () => {
@@ -847,11 +862,18 @@
       }
     };
   }
+
   // 保存价格
   btnSavePrice.onclick = () => {
     const p = readPriceFromInputs();
     savePrice(p);
-    pushBubble(`已保存价格：in=${p.in_per_1m}/1M, out=${p.out_per_1m}/1M, blend=${p.blend_per_1m}/1M`, "ai");
+
+    // ✅ 提示“有效 blend”
+    const eff = effectivePrice(p);
+    pushBubble(
+      `已保存价格：in=${eff.in_per_1m}/1M, out=${eff.out_per_1m}/1M, blend=${eff.blend_per_1m}/1M（计算用）`,
+      "ai"
+    );
   };
 
   async function refreshAll(force=false){
