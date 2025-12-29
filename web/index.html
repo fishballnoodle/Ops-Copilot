@@ -167,7 +167,9 @@
     <div class="right">
       <div class="pill">API: <b id="apiBaseText"></b></div>
       <div class="pill">状态: <b id="apiStatus">未知</b></div>
-      <button class="btn" id="btnRefresh">刷新</button>
+            <div class="pill">TZ: <b id="tzText" class="mono"></b></div>
+      <button class="btn" id="btnTZ">时区</button>
+<button class="btn" id="btnRefresh">刷新</button>
     </div>
   </header>
 
@@ -345,11 +347,16 @@
   const API_BASE = localStorage.getItem("OPS_API_BASE") || "http://127.0.0.1:8000";
   const REFRESH_MS = 2000;
   const WINDOW_S = 3600; // ✅ 过去 1 小时
+  const DEFAULT_TZ = "Asia/Shanghai"; // 你也可以改成 Asia/Singapore 等
+  const TZ_KEY = "OPS_TZ";
+  const TZ = localStorage.getItem(TZ_KEY) || DEFAULT_TZ;
 
   // === DOM ===
   const apiBaseText = document.getElementById("apiBaseText");
   const apiStatus = document.getElementById("apiStatus");
   const btnRefresh = document.getElementById("btnRefresh");
+  const tzText = document.getElementById("tzText");
+  const btnTZ = document.getElementById("btnTZ");
   const dotHealth = document.getElementById("dotHealth");
   const healthText = document.getElementById("healthText");
   const selectedEventText = document.getElementById("selectedEventText");
@@ -390,6 +397,7 @@
 
   apiBaseText.textContent = API_BASE;
 
+  if(tzText) tzText.textContent = TZ;
   // === State ===
   let selectedEventId = null;
   let lastEvents = [];
@@ -445,6 +453,37 @@
       .replaceAll("'","&#039;");
   }
 
+
+  // === Timezone formatting ===
+  function _toDate(ts){
+    if(!ts) return null;
+    // 兼容 ISO / 带 Z / 带 +00:00
+    const d = new Date(ts);
+    if(isNaN(d.getTime())) return null;
+    return d;
+  }
+  function fmtTs(ts){
+    const d = _toDate(ts);
+    if(!d) return String(ts || "");
+    try{
+      const fmt = new Intl.DateTimeFormat("zh-CN", {
+        timeZone: TZ,
+        year:"numeric", month:"2-digit", day:"2-digit",
+        hour:"2-digit", minute:"2-digit", second:"2-digit",
+        hour12:false
+      });
+      return fmt.format(d);
+    }catch(e){
+      // 如果浏览器不支持该时区标识，就退回本地时间
+      return d.toLocaleString();
+    }
+  }
+  function fmtIsoWithTz(ts){
+    // 展示：本地/指定TZ + 原始 ISO（用于对照）
+    const raw = String(ts || "");
+    const local = fmtTs(raw);
+    return local + (raw ? ` (raw ${raw})` : "");
+  }
   function renderFocus(items){
     focusList.innerHTML = "";
     if(!items || items.length === 0){
@@ -477,7 +516,7 @@
       const div = document.createElement("div");
       div.className = "tl";
       div.innerHTML = `
-        <div class="ts mono">${escapeHtml(t.ts)}</div>
+        <div class="ts mono">${escapeHtml(fmtTs(t.ts))}</div>
         <div class="note">${escapeHtml(t.note)}</div>
       `;
       timeline.appendChild(div);
@@ -530,7 +569,7 @@
       const sev = e.severity_hint || "INFO";
       const line = document.createElement("div");
       line.className = "logline";
-      line.innerHTML = `<span class="ts">${escapeHtml(ts)}</span>  <span class="sev${escapeHtml(sev)}">${escapeHtml(sev)}</span>  ${escapeHtml(raw || e.title || "")}`;
+      line.innerHTML = `<span class="ts">${escapeHtml(fmtTs(ts))}</span>  <span class="sev${escapeHtml(sev)}">${escapeHtml(sev)}</span>  ${escapeHtml(raw || e.title || "")}`;
       logbox.appendChild(line);
     }
   }
@@ -707,7 +746,7 @@
       const line = document.createElement("div");
       line.className = "logline";
       line.innerHTML = `
-        <span class="ts">${escapeHtml(r.ts || "")}</span>
+        <span class="ts">${escapeHtml(fmtTs(r.ts || ""))}</span>
         <span class="${sevClass}" style="margin-left:8px;">${ok}</span>
         <span class="muted" style="margin-left:8px;">tok</span> <span class="mono">${escapeHtml(tt)}</span>
         <span class="muted" style="margin-left:8px;">ms</span> <span class="mono">${escapeHtml(r.latency_ms ?? 0)}</span>
@@ -750,7 +789,7 @@
       const items = usage?.items || [];
       renderRecentCalls(items, price);
 
-      if(llmUpdatedAt) llmUpdatedAt.textContent = escapeHtml(sum.generated_at || usage.generated_at || "-");
+      if(llmUpdatedAt) llmUpdatedAt.textContent = escapeHtml(fmtTs(sum.generated_at || usage.generated_at || "-"));
     }catch(e){
       if(llmUpdatedAt) llmUpdatedAt.textContent = "LLM 面板不可用";
     }
@@ -796,6 +835,18 @@
     await refreshAll(true);
   };
 
+
+  // 切换时区（保存到浏览器）
+  if(btnTZ){
+    btnTZ.onclick = () => {
+      const cur = localStorage.getItem(TZ_KEY) || DEFAULT_TZ;
+      const nz = prompt("输入要显示的时区（IANA），例如：Asia/Shanghai / Asia/Singapore / UTC", cur);
+      if(nz && nz.trim()){
+        localStorage.setItem(TZ_KEY, nz.trim());
+        location.reload();
+      }
+    };
+  }
   // 保存价格
   btnSavePrice.onclick = () => {
     const p = readPriceFromInputs();

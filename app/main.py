@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import os
+import re
 import uuid
 import traceback
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request, Body
+from fastapi import FastAPI, HTTPException, Request, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 import app.store as store_mod
@@ -19,9 +20,10 @@ from app.store import InMemoryStore
 from app.scoring import score_event
 from app.copilot import detect_intent
 from app.copilot_deepseek import deepseek_analyze
-from app.llm import call_llm_json, ledger_list, ledger_summary
+from app.llm import call_llm_json
+from app.llm_ledger import ledger_list, ledger_summary
 from app.ingest.syslog import parse_syslog
-import re
+
 
 print("STORE MODULE PATH =", store_mod.__file__)
 
@@ -70,44 +72,44 @@ def _fingerprint_fallback(msg: str) -> str:
     兜底：尽量去掉类似 H3C 前缀时间戳，避免每条都不一样。
     """
     s = (msg or "").strip()
-    s = re.sub(r"^%[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}:\d{3}\s+\d{4}\s+H3C\s+", "H3C ", s)
+
+    # 去掉 H3C 样式：%Aug 18 14:25:29:336 2025 H3C  这一段
+    s = re.sub(
+        r"^%[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}:\d{3}\s+\d{4}\s+H3C\s+",
+        "H3C ",
+        s
+    )
+
+    # 再把可能的 “%Aug ...” 泛化一点点
     s = re.sub(r"^%[A-Za-z]{3}\s+\d{1,2}\s+", "%MON DAY ", s)
+
     return s
 
 
 # -----------------------------
-# LLM usage APIs (token panel backend)
+# LLM ledger APIs（给前端面板用）
 # -----------------------------
-@app.get("/api/llm/usage")
-def llm_usage(window_s: int = 3600, limit: int = 200):
-    return {
-        "ok": True,
-        "generated_at": _now_iso(),
-        "window_s": window_s,
-        "items": ledger_list(window_s=window_s, limit=limit),
-    }
-
-
 @app.get("/api/llm/summary")
-def llm_summary(window_s: int = 3600):
-    return {
-        "ok": True,
-        "generated_at": _now_iso(),
-        "summary": ledger_summary(window_s=window_s),
-    }
+def llm_summary(window_s: int = Query(3600, ge=60, le=24 * 3600)):
+    return ledger_summary(window_s=window_s)
+
+
+@app.get("/api/llm/usage")
+def llm_usage(window_s: int = Query(3600, ge=60, le=24 * 3600), limit: int = Query(50, ge=1, le=200)):
+    return ledger_list(window_s=window_s, limit=limit)
 
 
 # -----------------------------
-# Copilot Ask / Briefing
+# Copilot Briefing（结构化输出）
 # -----------------------------
 @app.post("/api/copilot/ask")
 def copilot_ask(payload: dict = Body(...)):
     q = (payload.get("question") or "").strip()
     top = int(payload.get("top") or 3)
 
-    # recent_events 签名容易踩坑：用 limit=top
+    # 取 top 聚合事件
     if hasattr(store, "recent_events"):
-        focus_items = store.recent_events(limit=top)  # type: ignore
+        focus_items = store.recent_events(top)
     else:
         focus_items = store.list_events(limit=top)
 
@@ -134,15 +136,9 @@ def copilot_ask(payload: dict = Body(...)):
             "events": events_for_llm,
         },
         window="last_1h",
-        action="ask",
-        endpoint="/api/copilot/ask",
-        intent=intent,
-        meta={"top": top},
+        meta={"action": "ask", "endpoint": "/api/copilot/ask", "intent": intent},
     )
-
     result["intent"] = intent
-    result["ok"] = True
-    result["generated_at"] = _now_iso()
     return result
 
 
@@ -150,7 +146,7 @@ def copilot_ask(payload: dict = Body(...)):
 def copilot_briefing(top: int = 3, window: str = "last_1h"):
     try:
         if hasattr(store, "recent_events"):
-            focus_items = store.recent_events(limit=top)  # type: ignore
+            focus_items = store.recent_events(top)
         else:
             focus_items = store.list_events(limit=top)
 
@@ -162,20 +158,14 @@ def copilot_briefing(top: int = 3, window: str = "last_1h"):
                 "category": getattr(e, "category", None),
                 "ts": getattr(e, "ts", None),
                 "fingerprint": getattr(e, "fingerprint", None),
-                "count": (agg.get("count") or 1),
-                "first_seen": agg.get("first_seen"),
-                "last_seen": agg.get("last_seen"),
                 "aggregate": agg,
             }
 
         events_for_llm = [to_llm(e) for e in focus_items]
-
         briefing = call_llm_json(
             events_for_llm=events_for_llm,
             window=window,
-            action="briefing",
-            endpoint="/api/copilot/briefing",
-            meta={"top": top, "window": window},
+            meta={"action": "briefing", "endpoint": "/api/copilot/briefing"},
         )
 
         briefing["ok"] = True
@@ -194,7 +184,7 @@ def copilot_briefing(top: int = 3, window: str = "last_1h"):
 
 
 # -----------------------------
-# Ingest Syslog (parse_syslog)
+# Ingest Syslog（关键：用 parse_syslog）
 # -----------------------------
 @app.post("/api/ingest/syslog")
 async def ingest_syslog(req: Request):
@@ -262,23 +252,21 @@ def list_events(limit: int = 20):
     try:
         return store.list_events(limit=limit)
     except TypeError:
-        # 兜底：避免 naive/aware 比较导致 500
         if hasattr(store, "recent_events"):
             items = store.recent_events(limit=limit)  # type: ignore
         else:
             items = store.list_events(limit=limit)
-
         items = list(items)
         items.sort(key=_event_sort_key, reverse=True)
         return items
 
 
 # -----------------------------
-# Focus (Top N)
+# Focus（Top N）
 # -----------------------------
 @app.get("/api/focus", response_model=FocusResponse)
 def focus(top: int = 3):
-    events = store.recent_events(limit=50)  # type: ignore
+    events = store.recent_events(limit=50)
 
     scored = []
     for e in events:
@@ -311,7 +299,7 @@ def focus(top: int = 3):
             else:
                 one_line = "当前风险较低，可先观察是否继续出现。"
 
-        scored.append((score, lvl, e, one_line))
+        scored.append((float(score), lvl, e, one_line))
 
     scored.sort(key=lambda x: x[0], reverse=True)
 
@@ -329,7 +317,7 @@ def focus(top: int = 3):
 
 
 # -----------------------------
-# Analyze (DeepSeek)
+# Analyze（DeepSeek）
 # -----------------------------
 @app.post("/api/copilot/analyze", response_model=Analysis)
 def copilot_analyze(req: AnalyzeRequest):
@@ -349,7 +337,7 @@ def incident_timeline(event_id: str):
 
 
 # -----------------------------
-# Chat (free mode)
+# Chat（自由模式：走 DeepSeek analyze）
 # -----------------------------
 @app.post("/api/copilot/chat", response_model=ChatResponse)
 def copilot_chat(req: ChatRequest):
@@ -357,7 +345,6 @@ def copilot_chat(req: ChatRequest):
     if not msg:
         return ChatResponse(reply="你还没输入问题。", focus=[], analysis=None)
 
-    # selected event
     selected = None
     try:
         selected = (req.context or {}).get("selected_event_id")
@@ -386,14 +373,10 @@ def copilot_chat(req: ChatRequest):
     if selected:
         e = store.get_event(selected)
         if e:
-            areq = AnalyzeRequest(
-                event_id=selected,
-                question=q,
-                context={"intent": intent, "user_message": msg, "session_id": getattr(req, "session_id", None)},
-            )
+            areq = AnalyzeRequest(event_id=selected, question=q, context={"intent": intent, "user_message": msg})
             analysis = deepseek_analyze(e, areq)
 
-    reply = analysis.summary if analysis else "我还没有收到事件数据。你可以先 ingest 一些 syslog。"
+    reply = analysis.summary if analysis else "我还没有收到事件数据。你可以先调用 /api/ingest/syslog 或 /api/events/ingest 上报一些事件。"
 
     f_items = focus(top=3).items
     focus_payload = [{"event_id": i.event_id, "risk_level": i.risk_level, "title": i.title} for i in f_items]

@@ -102,6 +102,11 @@
       background:rgba(8,14,26,.55); color:var(--text); outline:none;
     }
     input[type="text"]::placeholder{color:rgba(138,161,194,.7)}
+    input[type="number"]{
+      width:120px; padding:8px 10px; border-radius:12px; border:1px solid var(--border);
+      background:rgba(8,14,26,.55); color:var(--text); outline:none;
+      font-family:var(--mono); font-size:12px;
+    }
     .quick{display:flex; gap:8px; flex-wrap:wrap;}
     .quick .btn{padding:7px 9px}
     .list{display:flex; flex-direction:column; gap:10px;}
@@ -182,7 +187,7 @@
           <div class="stack">
             <div class="msgbox">
               <div class="row" style="justify-content:space-between;">
-                <div class="small"><b>Copilot Briefing</b> <span class="muted">（演示用固定问题按钮）</span></div>
+                <div class="small"><b>Copilot</b> <span class="muted">（自由聊天 + 演示按钮）</span></div>
                 <div class="tag">结构化输出</div>
               </div>
 
@@ -199,12 +204,12 @@
               <div id="chat" class="chat"></div>
 
               <div class="inputrow">
-                <input id="chatInput" type="text" placeholder="输入一句话，例如：现在系统状态怎么样？" />
+                <input id="chatInput" type="text" placeholder="自由提问：比如“这条 MAC 漂移为什么是 HIGH？”" />
                 <button class="btn" id="btnSend">发送</button>
               </div>
 
               <div class="footnote">
-                Tip：点上面按钮能保证每次演示都稳（不会靠灵感）。
+                Tip：按钮是为了演示稳定；自由输入能验证“是不是 LLM 真在回答”（看右侧 token 面板会不会增长）。
               </div>
             </div>
           </div>
@@ -236,7 +241,7 @@
       </div>
     </div>
 
-    <!-- RIGHT: Analysis + Evidence -->
+    <!-- RIGHT: Analysis + LLM Panel + Evidence -->
     <div class="rightcol">
       <div class="card analysis">
         <div class="hd">
@@ -257,6 +262,62 @@
 
           <div class="secTitle">证据引用</div>
           <div id="evidenceRefs" class="tiny muted">-</div>
+        </div>
+      </div>
+
+      <!-- LLM Token / Cost 面板 -->
+      <div class="card">
+        <div class="hd">
+          <div class="title">LLM Token & 成本面板（过去 1 小时）</div>
+          <div class="muted tiny">“按 action/endpoint 看到底是谁在烧钱”</div>
+        </div>
+        <div class="bd">
+          <div class="kpi" style="margin-bottom:10px;">
+            <span class="pill">Calls: <b id="llmCalls">0</b></span>
+            <span class="pill">Errors: <b id="llmErrors">0</b></span>
+            <span class="pill">Tokens: <b id="llmTokens">0</b></span>
+            <span class="pill">Avg Lat: <b id="llmAvgLat">0</b> ms</span>
+            <span class="pill">Est Cost: <b id="llmCostTotal">$0.0000</b></span>
+          </div>
+
+          <div class="msgbox" style="margin-bottom:10px;">
+            <div class="row" style="justify-content:space-between;">
+              <div class="small"><b>价格设置（$ / 1M tokens）</b> <span class="muted tiny">保存到浏览器</span></div>
+              <button class="btn" id="btnSavePrice">保存</button>
+            </div>
+            <div class="row tiny muted" style="margin-top:8px; flex-wrap:wrap;">
+              <span>Input:</span> <input type="number" step="0.0001" id="priceIn" />
+              <span>Output:</span> <input type="number" step="0.0001" id="priceOut" />
+              <span>Blend(无拆分时用):</span> <input type="number" step="0.0001" id="priceBlend" />
+              <span class="muted tiny">(如果后端不给 prompt/compl tokens，就用 Blend * total_tokens)</span>
+            </div>
+          </div>
+
+          <div class="sep"></div>
+
+          <div class="grid2" style="grid-template-columns:1fr 1fr;">
+            <div>
+              <div class="small"><b>By Action</b> <span class="muted tiny">(top 8)</span></div>
+              <div id="llmByAction" class="tiny muted" style="margin-top:8px;"></div>
+            </div>
+            <div>
+              <div class="small"><b>By Endpoint</b> <span class="muted tiny">(top 8)</span></div>
+              <div id="llmByEndpoint" class="tiny muted" style="margin-top:8px;"></div>
+            </div>
+          </div>
+
+          <div class="sep"></div>
+
+          <div class="row" style="justify-content:space-between; align-items:baseline;">
+            <div class="small"><b>Recent Calls</b> <span class="muted tiny">(latest 20)</span></div>
+            <div class="tag mono" id="llmUpdatedAt">-</div>
+          </div>
+
+          <div id="llmRecent" class="logbox" style="max-height:240px; margin-top:8px;"></div>
+
+          <div class="footnote">
+            说明：如果你点按钮/发送聊天后，这里 calls/tokens 增长且 recent 出现新记录，就能证明是 LLM 调用而非预制回答。
+          </div>
         </div>
       </div>
 
@@ -283,6 +344,7 @@
   // === Config ===
   const API_BASE = localStorage.getItem("OPS_API_BASE") || "http://127.0.0.1:8000";
   const REFRESH_MS = 2000;
+  const WINDOW_S = 3600; // ✅ 过去 1 小时
 
   // === DOM ===
   const apiBaseText = document.getElementById("apiBaseText");
@@ -309,6 +371,23 @@
   const logbox = document.getElementById("logbox");
   const eventCount = document.getElementById("eventCount");
 
+  // === LLM Panel DOM ===
+  const llmCalls = document.getElementById("llmCalls");
+  const llmErrors = document.getElementById("llmErrors");
+  const llmTokens = document.getElementById("llmTokens");
+  const llmAvgLat = document.getElementById("llmAvgLat");
+  const llmCostTotal = document.getElementById("llmCostTotal");
+  const llmByAction = document.getElementById("llmByAction");
+  const llmByEndpoint = document.getElementById("llmByEndpoint");
+  const llmRecent = document.getElementById("llmRecent");
+  const llmUpdatedAt = document.getElementById("llmUpdatedAt");
+
+  // price inputs
+  const priceIn = document.getElementById("priceIn");
+  const priceOut = document.getElementById("priceOut");
+  const priceBlend = document.getElementById("priceBlend");
+  const btnSavePrice = document.getElementById("btnSavePrice");
+
   apiBaseText.textContent = API_BASE;
 
   // === State ===
@@ -316,8 +395,6 @@
   let lastEvents = [];
 
   // === Helpers ===
-  const $ = (sel) => document.querySelector(sel);
-
   function lvlClass(lvl){
     if(!lvl) return "low";
     const x = String(lvl).toUpperCase();
@@ -325,7 +402,6 @@
     if(x === "MEDIUM") return "med";
     return "low";
   }
-
   function lvlLabel(lvl){
     const x = String(lvl||"LOW").toUpperCase();
     if(x === "HIGH") return "HIGH";
@@ -360,10 +436,19 @@
     chat.scrollTop = chat.scrollHeight;
   }
 
+  function escapeHtml(s){
+    return String(s ?? "")
+      .replaceAll("&","&amp;")
+      .replaceAll("<","&lt;")
+      .replaceAll(">","&gt;")
+      .replaceAll('"',"&quot;")
+      .replaceAll("'","&#039;");
+  }
+
   function renderFocus(items){
     focusList.innerHTML = "";
     if(!items || items.length === 0){
-      focusList.innerHTML = `<div class="muted small">暂无事件。先跑 mock_feeder 或手动 ingest。</div>`;
+      focusList.innerHTML = `<div class="muted small">暂无事件。先跑 feeder 或手动 ingest。</div>`;
       return;
     }
     for(const it of items){
@@ -440,7 +525,7 @@
     logbox.innerHTML = "";
     eventCount.textContent = String(events.length);
     for(const e of events){
-      const raw = e?.evidence?.logs?.[0]?.raw || "";
+      const raw = e?.raw?.message || e?.raw?.payload?.msg || "";
       const ts = e.ts || "";
       const sev = e.severity_hint || "INFO";
       const line = document.createElement("div");
@@ -450,20 +535,10 @@
     }
   }
 
-  function escapeHtml(s){
-    return String(s ?? "")
-      .replaceAll("&","&amp;")
-      .replaceAll("<","&lt;")
-      .replaceAll(">","&gt;")
-      .replaceAll('"',"&quot;")
-      .replaceAll("'","&#039;");
-  }
-
   async function selectEvent(eventId){
     selectedEventId = eventId;
     selectedEventText.textContent = eventId ? eventId : "无";
 
-    // 刷新 timeline
     try{
       const tl = await api(`/api/incidents/${encodeURIComponent(eventId)}/timeline`);
       renderTimeline(tl.timeline || []);
@@ -471,7 +546,6 @@
       renderTimeline([]);
     }
 
-    // 默认来一份 “what_happened” 分析
     try{
       const a = await api(`/api/copilot/analyze`, {
         method:"POST",
@@ -482,7 +556,6 @@
       renderAnalysis(null);
     }
 
-    // 刷新 focus 高亮
     await refreshFocus();
   }
 
@@ -499,7 +572,6 @@
     try{
       const f = await api("/api/focus?top=3");
       renderFocus(f.items || []);
-      // 没选中时：默认选 top1
       if(!selectedEventId && f.items && f.items.length){
         await selectEvent(f.items[0].event_id);
       }
@@ -518,6 +590,175 @@
     }
   }
 
+  // =========================
+  // Pricing + Cost Estimation
+  // =========================
+  const PRICE_KEY = "OPS_LLM_PRICE";
+  function loadPrice(){
+    const raw = localStorage.getItem(PRICE_KEY);
+    let p = { in_per_1m: 0.0, out_per_1m: 0.0, blend_per_1m: 0.0 };
+    try{
+      if(raw){
+        const j = JSON.parse(raw);
+        p.in_per_1m = Number(j.in_per_1m ?? p.in_per_1m);
+        p.out_per_1m = Number(j.out_per_1m ?? p.out_per_1m);
+        p.blend_per_1m = Number(j.blend_per_1m ?? p.blend_per_1m);
+      }
+    }catch(e){}
+    return p;
+  }
+  function savePrice(p){
+    localStorage.setItem(PRICE_KEY, JSON.stringify(p));
+  }
+  function applyPriceToInputs(p){
+    priceIn.value = String(p.in_per_1m ?? 0);
+    priceOut.value = String(p.out_per_1m ?? 0);
+    priceBlend.value = String(p.blend_per_1m ?? 0);
+  }
+  function readPriceFromInputs(){
+    return {
+      in_per_1m: Number(priceIn.value || 0),
+      out_per_1m: Number(priceOut.value || 0),
+      blend_per_1m: Number(priceBlend.value || 0),
+    };
+  }
+
+  function estimateCostUSD(row, price){
+    // row: {prompt_tokens, completion_tokens, total_tokens}
+    const pt = Number(row.prompt_tokens ?? 0);
+    const ct = Number(row.completion_tokens ?? 0);
+    const tt = Number(row.total_tokens ?? (pt + ct) ?? 0);
+
+    // 优先按拆分计算；没有拆分就用 blend
+    if((pt > 0 || ct > 0) && (price.in_per_1m > 0 || price.out_per_1m > 0)){
+      return (pt/1e6) * price.in_per_1m + (ct/1e6) * price.out_per_1m;
+    }
+    return (tt/1e6) * (price.blend_per_1m || 0);
+  }
+
+  function formatUSD(x){
+    const n = Number(x || 0);
+    return `$${n.toFixed(4)}`;
+  }
+
+  // =========================
+  // LLM Panel Render
+  // =========================
+  function renderKVList(container, obj, topN=8, price=null){
+    if(!container) return;
+    if(!obj || typeof obj !== "object"){
+      container.innerHTML = `<div class="muted tiny">-</div>`;
+      return;
+    }
+
+    const rows = Object.entries(obj)
+      .map(([k,v]) => {
+        const calls = v.calls ?? 0;
+        const tokens = v.tokens ?? 0;
+        const err = v.errors ?? 0;
+        const lat = v.avg_latency_ms ?? 0;
+        let cost = 0;
+        if(price){
+          // summary 里只有 tokens（通常无拆分），用 blend 估
+          cost = (Number(tokens)/1e6) * (price.blend_per_1m || 0);
+        }
+        return {k, calls, tokens, err, lat, cost};
+      })
+      .sort((a,b) => (b.cost - a.cost) || (b.tokens - a.tokens) || (b.calls - a.calls))
+      .slice(0, topN);
+
+    if(rows.length === 0){
+      container.innerHTML = `<div class="muted tiny">-</div>`;
+      return;
+    }
+
+    container.innerHTML = rows.map(r => `
+      <div class="row" style="justify-content:space-between; gap:10px; padding:4px 0; border-bottom:1px dashed rgba(31,51,84,.35);">
+        <div class="mono" style="max-width:55%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(r.k)}</div>
+        <div class="mono" style="text-align:right;">
+          <span class="muted">calls</span> ${r.calls}
+          · <span class="muted">tok</span> ${r.tokens}
+          · <span class="muted">err</span> ${r.err}
+          · <span class="muted">ms</span> ${r.lat}
+          ${price ? `· <span class="muted">cost</span> ${formatUSD(r.cost)}` : ``}
+        </div>
+      </div>
+    `).join("");
+  }
+
+  function renderRecentCalls(items, price){
+    if(!llmRecent) return;
+    llmRecent.innerHTML = "";
+    if(!items || !items.length){
+      llmRecent.innerHTML = `<div class="muted tiny">暂无 LLM 调用记录（最近 1 小时）。</div>`;
+      return;
+    }
+
+    const show = items.slice(0, 20);
+    for(const r of show){
+      const ok = r.ok ? "OK" : "ERR";
+      const sevClass = r.ok ? "sevINFO" : "sevERROR";
+      const est = estimateCostUSD(r, price);
+
+      const pt = Number(r.prompt_tokens ?? 0);
+      const ct = Number(r.completion_tokens ?? 0);
+      const tt = Number(r.total_tokens ?? 0);
+
+      const line = document.createElement("div");
+      line.className = "logline";
+      line.innerHTML = `
+        <span class="ts">${escapeHtml(r.ts || "")}</span>
+        <span class="${sevClass}" style="margin-left:8px;">${ok}</span>
+        <span class="muted" style="margin-left:8px;">tok</span> <span class="mono">${escapeHtml(tt)}</span>
+        <span class="muted" style="margin-left:8px;">ms</span> <span class="mono">${escapeHtml(r.latency_ms ?? 0)}</span>
+        <span class="muted" style="margin-left:8px;">est</span> <span class="mono">${escapeHtml(formatUSD(est))}</span>
+        <br/>
+        <span class="muted">split</span> <span class="mono">in:${escapeHtml(pt)} out:${escapeHtml(ct)}</span>
+        <span class="muted" style="margin-left:10px;">action</span> <span class="mono">${escapeHtml(r.action || "-")}</span>
+        <br/>
+        <span class="muted">endpoint</span> <span class="mono">${escapeHtml(r.endpoint || "-")}</span>
+        <span class="muted" style="margin-left:10px;">event</span> <span class="mono">${escapeHtml(r.event_id || "-")}</span>
+        <span class="muted" style="margin-left:10px;">intent</span> <span class="mono">${escapeHtml(r.intent || "-")}</span>
+        ${r.error ? `<br/><span class="sevERROR">${escapeHtml(r.error)}</span>` : ``}
+      `;
+      llmRecent.appendChild(line);
+    }
+  }
+
+  async function refreshLLMPanel(){
+    // 价格（每次刷新都读一次，保证你改了立即生效）
+    const price = loadPrice();
+
+    try{
+      const sum = await api(`/api/llm/summary?window_s=${WINDOW_S}`);
+      const s = sum?.summary || {};
+
+      if(llmCalls) llmCalls.textContent = String(s.calls ?? 0);
+      if(llmErrors) llmErrors.textContent = String(s.errors ?? 0);
+      if(llmTokens) llmTokens.textContent = String(s.total_tokens ?? 0);
+      if(llmAvgLat) llmAvgLat.textContent = String(s.avg_latency_ms ?? 0);
+
+      // 总成本：如果 summary 有拆分字段也可用；一般只有 total_tokens -> blend
+      const totalTok = Number(s.total_tokens ?? 0);
+      const totalCost = (totalTok/1e6) * (price.blend_per_1m || 0);
+      if(llmCostTotal) llmCostTotal.textContent = formatUSD(totalCost);
+
+      renderKVList(llmByAction, s.by_action || {}, 8, price);
+      renderKVList(llmByEndpoint, s.by_endpoint || {}, 8, price);
+
+      const usage = await api(`/api/llm/usage?window_s=${WINDOW_S}&limit=50`);
+      const items = usage?.items || [];
+      renderRecentCalls(items, price);
+
+      if(llmUpdatedAt) llmUpdatedAt.textContent = escapeHtml(sum.generated_at || usage.generated_at || "-");
+    }catch(e){
+      if(llmUpdatedAt) llmUpdatedAt.textContent = "LLM 面板不可用";
+    }
+  }
+
+  // =========================
+  // Copilot Chat
+  // =========================
   async function sendChat(text){
     const msg = text.trim();
     if(!msg) return;
@@ -532,13 +773,10 @@
       const r = await api("/api/copilot/chat", { method:"POST", body: JSON.stringify(payload) });
 
       pushBubble(r.reply || "(no reply)", "ai");
-      // 更新 focus（AI 说完顺便刷新一下）
+
       await refreshFocus();
 
-      // 若返回 analysis，则更新右侧面板
       if(r.analysis) renderAnalysis(r.analysis);
-
-      // 若 focus 列表变化后选中的事件丢了，也没关系
     }catch(e){
       pushBubble("调用 Copilot 失败：请确认后端已启动，并允许 CORS。", "ai");
     }
@@ -558,106 +796,31 @@
     await refreshAll(true);
   };
 
+  // 保存价格
+  btnSavePrice.onclick = () => {
+    const p = readPriceFromInputs();
+    savePrice(p);
+    pushBubble(`已保存价格：in=${p.in_per_1m}/1M, out=${p.out_per_1m}/1M, blend=${p.blend_per_1m}/1M`, "ai");
+  };
+
   async function refreshAll(force=false){
     await refreshHealth();
     await refreshEvents();
     await refreshFocus();
+    await refreshLLMPanel();
   }
 
   // === Init ===
   (async () => {
-    pushBubble("我已经帮你看完系统了。你可以点上面的按钮开始演示。", "ai");
+    // 默认价格（你可以自己改）
+    const p = loadPrice();
+    applyPriceToInputs(p);
+
+    pushBubble("我已经帮你看完系统了。你可以点按钮或自由提问。", "ai");
     await refreshAll(true);
     setInterval(() => refreshAll(false), REFRESH_MS);
   })();
 })();
-</script>
-<script>
-/* ========= Copilot 自由模式保护 ========= */
-
-function isNonsense(text) {
-  const t = (text || "").trim();
-  if (t.length < 6) return true;
-
-  // 常见无意义输入
-  const bad = /^(哈+|哈哈+|嗯+|哦+|额+|…+|\?+|？+|你还|ok|好的)$/i;
-  return bad.test(t);
-}
-
-async function sendCopilotQuestion() {
-  const input = document.getElementById("copilot-input");
-  const question = input.value.trim();
-
-  if (isNonsense(question)) {
-    appendCopilotMessage("请输入更具体的问题，例如：\n• 现在有哪些高风险事件？\n• 如果我暂时不处理，会发生什么？", "system");
-    return;
-  }
-
-  appendCopilotMessage(question, "user");
-  input.value = "";
-
-  try {
-    const resp = await fetch("/api/copilot/ask", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({
-        question: question,
-        top: 3
-      })
-    });
-
-    const data = await resp.json();
-
-    if (!data.ok) {
-      appendCopilotMessage("Copilot 出错：" + data.error, "system");
-      return;
-    }
-
-    renderCopilotResult(data);
-
-  } catch (e) {
-    appendCopilotMessage("无法连接 Copilot 服务", "system");
-  }
-}
-
-/* ========= 渲染结构化结果 ========= */
-
-function renderCopilotResult(data) {
-  const r = data.result || {};
-  const lines = [];
-
-  if (r.overall && r.overall.summary) {
-    lines.push("【整体状态】");
-    lines.push(r.overall.summary);
-    lines.push("");
-  }
-
-  if (Array.isArray(r.top)) {
-    r.top.forEach((e, i) => {
-      lines.push(`【事件 ${i + 1}】${e.title}`);
-      if (e.count) lines.push(`发生次数：${e.count}`);
-      if (e.why_it_matters) lines.push(`影响：${e.why_it_matters}`);
-      if (Array.isArray(e.next_steps)) {
-        lines.push("建议下一步：");
-        e.next_steps.forEach(s => lines.push("• " + s));
-      }
-      lines.push("");
-    });
-  }
-
-  appendCopilotMessage(lines.join("\n"), "assistant");
-}
-
-/* ========= 简单对话渲染（你原本应该已经有类似的） ========= */
-
-function appendCopilotMessage(text, role) {
-  const box = document.getElementById("copilot-chat");
-  const div = document.createElement("div");
-  div.className = "msg " + role;
-  div.innerText = text;
-  box.appendChild(div);
-  box.scrollTop = box.scrollHeight;
-}
 </script>
 </body>
 </html>

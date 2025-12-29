@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 
-export DEEPSEEK_API_KEY="sk-xxxxxxxxxxxx"
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT_DIR"
+
+export DEEPSEEK_API_KEY="sk-98549bf54d0c4c07afbf54310b5120ea"
 export DEEPSEEK_BASE_URL="https://api.deepseek.com/v1"
 export DEEPSEEK_MODEL="deepseek-chat"
-export LLM_LEDGER_JSONL="./data/llm_usage.jsonl"
-
+export LLM_LEDGER_JSONL="$ROOT_DIR/data/llm_usage.jsonl"
+echo "🧾 LLM_LEDGER_JSONL=$LLM_LEDGER_JSONL"
 set -e
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT_DIR"
-
 echo "📁 Project root: $ROOT_DIR"
 
 # 1. 创建 venv（仅第一次）
@@ -44,7 +46,13 @@ echo "   API:     http://127.0.0.1:8000"
 echo "   LOGFILE: $LOG_FILE"
 echo ""
 
-# 6. 退出时清理
+
+# 6. 前端页面打开
+python3 -m http.server 5173 --directory web &
+INGEST_PID=$!
+echo "✅ INGEST PID: $INGEST_PID"
+echo "   web:     http://127.0.0.1:5173"
+# 7. 退出时清理
 cleanup() {
   echo ""
   echo "🧹 Stopping services..."
@@ -52,6 +60,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 7. 等待（否则脚本直接退出）
+# 8. 等待（否则脚本直接退出）
 wait
 
