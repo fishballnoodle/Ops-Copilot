@@ -8,7 +8,7 @@ echo "📁 Project root: $ROOT_DIR"
 # =========================
 # LLM / Ledger (你的原配置)
 # =========================
-export DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-sk-98549bf54d0c4c07afbf54310b5120ea}"
+export DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-sk-xxxxxxxxxxxxxxxxxxxxx}"
 export DEEPSEEK_BASE_URL="${DEEPSEEK_BASE_URL:-https://api.deepseek.com/v1}"
 export DEEPSEEK_MODEL="${DEEPSEEK_MODEL:-deepseek-chat}"
 export LLM_LEDGER_JSONL="${LLM_LEDGER_JSONL:-$ROOT_DIR/data/llm_usage.jsonl}"
