@@ -3,7 +3,7 @@
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT_DIR"
 
-export DEEPSEEK_API_KEY="sk-98549bf54d0c4c07afbf54310b5120ea"
+export DEEPSEEK_API_KEY="sk-xxxxxxxxxxx"
 export DEEPSEEK_BASE_URL="https://api.deepseek.com/v1"
 export DEEPSEEK_MODEL="deepseek-chat"
 export LLM_LEDGER_JSONL="$ROOT_DIR/data/llm_usage.jsonl"
