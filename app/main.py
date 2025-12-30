@@ -19,11 +19,54 @@ from app.models import (
     Event, IngestResponse, FocusResponse, FocusItem,
     AnalyzeRequest, ChatRequest, ChatResponse, Analysis,
 )
+from tools.desensitizer import Desensitizer, DesensitizeConfig
 
 from app.scoring import score_event
 from app.copilot import detect_intent
 from app.copilot_deepseek import deepseek_analyze
 from app.llm import call_llm_json, json_safe  # 需要你 llm.py 里存在这两个
+
+
+try:
+    from tools.desensitizer import Desensitizer, DesensitizeConfig
+except Exception:
+    Desensitizer = None  # type: ignore
+    DesensitizeConfig = None  # type: ignore
+
+def _build_des():
+    enable = os.environ.get("ENABLE_DESENSITIZE", "1").lower() not in ("0", "false", "no")
+    if not enable or Desensitizer is None:
+        return None
+    secret = os.environ.get("OPS_DESENSE_SECRET", "") or "WEAK_DEFAULT_SECRET_CHANGE_ME"
+    cfg = DesensitizeConfig(
+        secret_key=secret,
+        reversible=os.environ.get("DESENSITIZE_REVERSIBLE", "0").lower() in ("1", "true", "yes"),
+        mapping_path=os.environ.get("DESENSITIZE_MAP_PATH", "data/desensitize_map.json"),
+        keep_private_ranges=os.environ.get("KEEP_PRIVATE_RANGES", "0").lower() in ("1", "true", "yes"),
+    )
+    return Desensitizer(cfg)
+
+DES = _build_des()
+
+def _mask_text(s: str) -> str:
+    if not DES or not s:
+        return s
+    out, _ = DES.desensitize_line(s + "\n")
+    return out.rstrip("\n")
+
+def _mask_obj(obj: Any):
+    if DES is None:
+        return obj
+    if obj is None:
+        return None
+    if isinstance(obj, str):
+        return _mask_text(obj)
+    if isinstance(obj, list):
+        return [_mask_obj(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _mask_obj(v) for k, v in obj.items()}
+    return obj
+
 
 # syslog parser（如果你项目里有）
 try:
@@ -31,6 +74,42 @@ try:
 except Exception:
     parse_syslog = None
 
+
+
+def _build_des():
+    enable = os.environ.get("ENABLE_DESENSITIZE", "1").lower() not in ("0","false","no")
+    if not enable:
+        return None
+    secret = os.environ.get("OPS_DESENSE_SECRET","") or "WEAK_DEFAULT_SECRET_CHANGE_ME"
+    cfg = DesensitizeConfig(
+        secret_key=secret,
+        reversible=os.environ.get("DESENSITIZE_REVERSIBLE","0").lower() in ("1","true","yes"),
+        mapping_path=os.environ.get("DESENSITIZE_MAP_PATH","data/desensitize_map.json"),
+        keep_private_ranges=os.environ.get("KEEP_PRIVATE_RANGES","0").lower() in ("1","true","yes"),
+    )
+    return Desensitizer(cfg)
+
+DES = _build_des()
+
+def _mask_text(s: str) -> str:
+    if not DES or not s:
+        return s
+    out, _ = DES.desensitize_line(s + "\n")
+    return out.rstrip("\n")
+
+def _mask_obj(obj):
+    """递归脱敏 dict/list/str，保证 raw 也不会漏。"""
+    if DES is None:
+        return obj
+    if obj is None:
+        return None
+    if isinstance(obj, str):
+        return _mask_text(obj)
+    if isinstance(obj, list):
+        return [_mask_obj(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _mask_obj(v) for k, v in obj.items()}
+    return obj
 
 # =============================
 # LLM Ledger (minimal JSONL)
@@ -314,20 +393,29 @@ async def evidence_ingest(req: Request):
       "raw": {...原始结构...}
     }
     """
+
     payload = await req.json()
+
+    host = _mask_text(str(payload.get("host") or "unknown"))
+    user = _mask_text(str(payload.get("user") or "")) if payload.get("user") else None
+    msg = _mask_text(str(payload.get("msg") or payload.get("message") or ""))
+
+    # ✅ raw 一律存脱敏后的
+    raw_in = payload.get("raw") or payload
+    raw = _mask_obj(dict(raw_in))  # recursive mask
 
     item = EvidenceItem(
         id=f"evd_{uuid.uuid4().hex[:12]}",
         ts=_safe_iso(payload.get("timestamp")),
         source=str(payload.get("source") or "unknown"),
         kind=str(payload.get("kind") or "evidence"),
-        host=str(payload.get("host") or "unknown"),
-        user=payload.get("user"),
-        msg=str(payload.get("msg") or payload.get("message") or ""),
+        host=host,
+        user=user,
+        msg=msg,
         tags=list(payload.get("tags") or []),
         event_id=payload.get("event_id"),
         fingerprint=payload.get("fingerprint"),
-        raw=dict(payload.get("raw") or payload),
+        raw=raw,
     )
     EVIDENCE.append(item)
     # 控制内存：只保留最后 5000 条
@@ -369,26 +457,48 @@ def evidence_list(
 async def ingest_syslog(req: Request):
     payload = await req.json()
 
-    host = payload.get("host") or "unknown"
-    program = payload.get("program") or "syslog"
-    msg = payload.get("msg") or ""
+    host_raw = payload.get("host") or "unknown"
+    program_raw = payload.get("program") or "syslog"
+    msg_raw = payload.get("msg") or ""
     ts = payload.get("timestamp") or datetime.now(timezone.utc).isoformat()
+
+    # ✅ 先脱敏基础字段（后续所有派生字段都用脱敏后的）
+    host = _mask_text(str(host_raw))
+    program = _mask_text(str(program_raw))
+    msg = _mask_text(str(msg_raw))
 
     parsed = {}
     if parse_syslog:
         try:
+            # ⚠️ parse_syslog 用脱敏后的 msg（避免 parsed 里再带回明文）
             parsed = parse_syslog(msg) or {}
         except Exception:
             parsed = {}
 
     category = payload.get("category") or parsed.get("category") or "SYSLOG"
-    title = payload.get("title") or parsed.get("title") or f"{host} {program}: {msg[:80]}".strip()
 
-    fp = (
+    # ✅ title/fingerprint 也必须脱敏（尤其 fingerprint 你现在会拼 msg）
+    title_raw = payload.get("title") or parsed.get("title") or f"{host} {program}: {msg[:80]}".strip()
+    title = _mask_text(str(title_raw))
+
+    fp_raw = (
         payload.get("fingerprint")
         or parsed.get("fingerprint")
         or f"syslog|{host}|{program}|{_fingerprint_fallback(msg)[:140]}"
     )
+    fp = _mask_text(str(fp_raw))
+
+    # ✅ raw 只能存脱敏后的：message/msg/payload/parsed 全递归脱敏
+    #    注意：payload 里原本可能带着明文 msg/host/program，所以要覆盖后再 mask
+    payload_safe = dict(payload)
+    payload_safe["host"] = host
+    payload_safe["program"] = program
+    payload_safe["msg"] = msg
+    payload_safe["title"] = title
+    payload_safe["fingerprint"] = fp
+    payload_safe = _mask_obj(payload_safe)
+
+    parsed_safe = _mask_obj(parsed)
 
     e = Event(
         event_id=f"evt_{uuid.uuid4().hex[:12]}",
@@ -402,12 +512,15 @@ async def ingest_syslog(req: Request):
             "host": host,
             "program": program,
         },
-        raw={"message": msg, "payload": payload, "parsed": parsed},
+        raw={
+            "message": msg,
+            "payload": payload_safe,
+            "parsed": parsed_safe,
+        },
     )
 
     store.upsert_events([e])
     return {"ok": True, "event_id": e.event_id, "fingerprint": fp, "title": title, "category": category}
-
 
 # =============================
 # Events APIs
