@@ -218,11 +218,36 @@ def detect_source(host_masked: str, msg_masked: str) -> str:
         return "ueba"
     return "syslog"
 
+# ============================================================
+# Classify (always feed masked msg/host)
+# ============================================================
+
 def classify_as_event(msg_masked: str, host_masked: str) -> Optional[Tuple[str, str, str]]:
-    # SHELL_CMD 类：仍然不当 Event，但也要走脱敏后的 Evidence
+    """
+    将 syslog 日志分类为“Event”，返回：
+        (category, title, fingerprint)
+    如果返回 None，则走 Evidence 流。
+
+    - 华为 SHELL/6 DISPLAY_CMDRECORD 自动识别为 Event
+    - 原有 MAC_FLAP / LINK_UPDOWN 规则保留
+    - 可按需扩展其他设备或类型
+    """
+    # -----------------------------
+    # 1️⃣ 华为 SHELL/6 DISPLAY_CMDRECORD
+    # -----------------------------
+    if "%%01SHELL/" in msg_masked and "DISPLAY_CMDRECORD" in msg_masked:
+        category = "SHELL_CMD"
+        title = f"{host_masked} DISPLAY_CMDRECORD"
+        fingerprint = stable_fingerprint(f"SHELL_CMD|{host_masked}|{msg_masked[:200]}")
+        return category, title, fingerprint
+
+    # 旧规则：%%10SHELL/ 不作为事件
     if "%%10SHELL/" in msg_masked:
         return None
 
+    # -----------------------------
+    # 2️⃣ MAC Flapping
+    # -----------------------------
     m = MAC_FLAP_RE.search(msg_masked)
     if m:
         mac = m.group("mac")
@@ -233,6 +258,9 @@ def classify_as_event(msg_masked: str, host_masked: str) -> Optional[Tuple[str, 
         fingerprint = stable_fingerprint(f"MAC_FLAPPING|{mac}|{p1}|{p2}")
         return category, title, fingerprint
 
+    # -----------------------------
+    # 3️⃣ Link Up/Down
+    # -----------------------------
     m = LINK_RE.search(msg_masked)
     if m:
         intf = m.group("intf")
@@ -242,6 +270,9 @@ def classify_as_event(msg_masked: str, host_masked: str) -> Optional[Tuple[str, 
         fingerprint = stable_fingerprint(f"LINK|{host_masked}|{intf}|{state}")
         return category, title, fingerprint
 
+    # -----------------------------
+    # 4️⃣ 默认：不识别为 Event
+    # -----------------------------
     return None
 
 # ============================================================

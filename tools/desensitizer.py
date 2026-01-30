@@ -69,8 +69,13 @@ class Desensitizer:
         return re.sub(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", repl, s)
 
     def _mask_mac(self, s: str) -> str:
+        pattern = (
+            r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b"  # xx:xx:xx:xx:xx:xx 或 xx-xx-xx-xx-xx-xx
+            r"|(?:[0-9A-Fa-f]{4}-){2}[0-9A-Fa-f]{4}\b"  # xxxx-xxxx-xxxx
+            r"|[0-9A-Fa-f]{12}\b"  # xxxxxxxxxxxx
+        )
         return re.sub(
-            r"\b([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b",
+            pattern,
             lambda m: self._map_value(m.group(0), "MAC"),
             s,
         )

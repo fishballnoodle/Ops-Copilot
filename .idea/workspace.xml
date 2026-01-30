@@ -4,11 +4,11 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="526ac9a1-e106-416f-9174-005a130ff057" name="更改" comment="信息脱敏">
-      <change afterPath="$PROJECT_DIR$/tools/desensitizer.py" afterDir="false" />
+    <list default="true" id="526ac9a1-e106-416f-9174-005a130ff057" name="更改" comment="丢失文件补全">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/run.sh" beforeDir="false" afterPath="$PROJECT_DIR$/run.sh" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/llm.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/llm.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/llm_ledger.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/llm_ledger.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tools/tail_ingest.py" beforeDir="false" afterPath="$PROJECT_DIR$/tools/tail_ingest.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -32,12 +32,12 @@
     &quot;assignee&quot;: &quot;fishballnoodle&quot;
   }
 }</component>
-  <component name="GithubPullRequestsUISettings">{
-  &quot;selectedUrlAndAccountId&quot;: {
-    &quot;url&quot;: &quot;https://github.com/fishballnoodle/Ops-Copilot.git&quot;,
-    &quot;accountId&quot;: &quot;1f543452-9cf3-4154-838d-142efb2210d0&quot;
+  <component name="GithubPullRequestsUISettings"><![CDATA[{
+  "selectedUrlAndAccountId": {
+    "url": "https://github.com/fishballnoodle/Ops-Copilot.git",
+    "accountId": "05a26cb8-7225-4afd-b447-6b3107e734ee"
   }
-}</component>
+}]]></component>
   <component name="ProjectColorInfo">{
   &quot;associatedIndex&quot;: 5
 }</component>
@@ -120,7 +120,7 @@
       <workItem from="1766719931224" duration="61221000" />
       <workItem from="1769055415206" duration="1409000" />
       <workItem from="1769751353843" duration="28000" />
-      <workItem from="1769752997677" duration="2464000" />
+      <workItem from="1769752997677" duration="6445000" />
     </task>
     <task id="LOCAL-00001" summary="更新token计数">
       <option name="closed" value="true" />
@@ -146,7 +146,15 @@
       <option name="project" value="LOCAL" />
       <updated>1767022565402</updated>
     </task>
-    <option name="localTasksCounter" value="4" />
+    <task id="LOCAL-00004" summary="丢失文件补全">
+      <option name="closed" value="true" />
+      <created>1769757705535</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1769757705535</updated>
+    </task>
+    <option name="localTasksCounter" value="5" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -156,7 +164,8 @@
     <MESSAGE value="更新token计数" />
     <MESSAGE value="修复token计数的bug" />
     <MESSAGE value="信息脱敏" />
-    <option name="LAST_COMMIT_MESSAGE" value="信息脱敏" />
+    <MESSAGE value="丢失文件补全" />
+    <option name="LAST_COMMIT_MESSAGE" value="丢失文件补全" />
   </component>
   <component name="XDebuggerManager">
     <breakpoint-manager>
